@@ -93,7 +93,7 @@ int inode_add_block(inode_t *node) {
     return block_index;
 }
 
-// File operations
+// File Operations
 int nufs_access(const char *path, int mask) {
     inode_t *node = inode_lookup(path);
     int rv = (node != NULL) ? 0 : -ENOENT;
@@ -118,8 +118,13 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     filler(buf, "..", NULL, 0);
 
     for (int i = 0; i < inode_count; i++) {
-        if (strncmp(inodes[i].path, path, strlen(path)) == 0 && strlen(inodes[i].path) > strlen(path)) {
-            filler(buf, inodes[i].path + strlen(path) + 1, NULL, 0);
+        const char *entry_path = inodes[i].path;
+        if (strncmp(entry_path, path, strlen(path)) == 0) {
+            const char *name = entry_path + strlen(path);
+            if (name[0] == '/') {
+                name++;
+                filler(buf, name, NULL, 0);
+            }
         }
     }
 
@@ -143,6 +148,16 @@ int nufs_mkdir(const char *path, mode_t mode) {
     int rv = (node != NULL) ? 0 : -ENOMEM;
     printf("mkdir(%s) -> %d\n", path, rv);
     return rv;
+}
+
+int nufs_rename(const char *from, const char *to) {
+    inode_t *node = inode_lookup(from);
+    if (!node) return -ENOENT;
+
+    strncpy(node->path, to, sizeof(node->path) - 1);
+    save_inodes();
+    printf("rename(%s -> %s)\n", from, to);
+    return 0;
 }
 
 int nufs_unlink(const char *path) {
@@ -221,6 +236,7 @@ void nufs_init_ops(struct fuse_operations *ops) {
     ops->readdir = nufs_readdir;
     ops->mknod = nufs_mknod;
     ops->mkdir = nufs_mkdir;
+    ops->rename = nufs_rename;
     ops->unlink = nufs_unlink;
     ops->read = nufs_read;
     ops->write = nufs_write;
