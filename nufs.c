@@ -28,14 +28,14 @@ typedef struct {
 static inode_t inodes[MAX_FILES];
 static int inode_count = 0;
 
-// Save inodes to a dedicated block
+// Save inodes to disk
 void save_inodes() {
     void *block = blocks_get_block(1); // Block 1 reserved for metadata
     memcpy(block, inodes, sizeof(inodes));
     printf("Saved inodes to disk.\n");
 }
 
-// Load inodes from a dedicated block
+// Load inodes from disk
 void load_inodes() {
     void *block = blocks_get_block(1); // Block 1 reserved for metadata
     memcpy(inodes, block, sizeof(inodes));
@@ -48,13 +48,13 @@ void load_inodes() {
     printf("Loaded inodes from disk.\n");
 }
 
-// Initialize storage system (called once at mount)
+// Initialize storage
 void storage_init(const char *path) {
     blocks_init(path);
     load_inodes();
 }
 
-// Look up an inode by path
+// Find an inode by path
 inode_t *inode_lookup(const char *path) {
     for (int i = 0; i < inode_count; i++) {
         if (strcmp(inodes[i].path, path) == 0) {
@@ -79,7 +79,7 @@ inode_t *inode_create(const char *path, mode_t mode) {
     return node;
 }
 
-// Add a block to a file
+// Allocate a new block
 int inode_add_block(inode_t *node) {
     if (node->block_count >= MAX_BLOCKS_PER_FILE) {
         return -1;
@@ -93,7 +93,7 @@ int inode_add_block(inode_t *node) {
     return block_index;
 }
 
-// File Operations
+// File operations
 int nufs_access(const char *path, int mask) {
     inode_t *node = inode_lookup(path);
     int rv = (node != NULL) ? 0 : -ENOENT;
@@ -118,7 +118,7 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     filler(buf, "..", NULL, 0);
 
     for (int i = 0; i < inode_count; i++) {
-        if (strncmp(inodes[i].path, path, strlen(path)) == 0) {
+        if (strncmp(inodes[i].path, path, strlen(path)) == 0 && strlen(inodes[i].path) > strlen(path)) {
             filler(buf, inodes[i].path + strlen(path) + 1, NULL, 0);
         }
     }
@@ -137,7 +137,10 @@ int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
 }
 
 int nufs_mkdir(const char *path, mode_t mode) {
-    int rv = nufs_mknod(path, mode | S_IFDIR, 0);
+    if (inode_lookup(path)) return -EEXIST;
+
+    inode_t *node = inode_create(path, mode | S_IFDIR);
+    int rv = (node != NULL) ? 0 : -ENOMEM;
     printf("mkdir(%s) -> %d\n", path, rv);
     return rv;
 }
@@ -161,16 +164,20 @@ int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
     if (!node) return -ENOENT;
 
     size_t bytes_read = 0;
-    for (int i = 0; i < node->block_count && size > 0; i++) {
-        void *block = blocks_get_block(node->blocks[i]);
+    while (size > 0 && offset < node->size) {
+        int block_idx = offset / BLOCK_SIZE;
+        if (block_idx >= node->block_count) break;
+
+        void *block = blocks_get_block(node->blocks[block_idx]);
         size_t block_offset = offset % BLOCK_SIZE;
         size_t to_read = BLOCK_SIZE - block_offset;
         if (to_read > size) to_read = size;
+        if (to_read > node->size - offset) to_read = node->size - offset;
 
         memcpy(buf + bytes_read, block + block_offset, to_read);
         bytes_read += to_read;
         size -= to_read;
-        offset = 0; // After first block, offset is 0
+        offset += to_read;
     }
 
     printf("read(%s, %ld bytes, @+%lld) -> %ld\n", path, size, (long long)offset, bytes_read);
@@ -183,11 +190,12 @@ int nufs_write(const char *path, const char *buf, size_t size, off_t offset, str
 
     size_t bytes_written = 0;
     while (size > 0) {
-        if (offset / BLOCK_SIZE >= node->block_count) {
+        int block_idx = offset / BLOCK_SIZE;
+        if (block_idx >= node->block_count) {
             if (inode_add_block(node) == -1) break;
         }
 
-        void *block = blocks_get_block(node->blocks[offset / BLOCK_SIZE]);
+        void *block = blocks_get_block(node->blocks[block_idx]);
         size_t block_offset = offset % BLOCK_SIZE;
         size_t to_write = BLOCK_SIZE - block_offset;
         if (to_write > size) to_write = size;
@@ -205,7 +213,7 @@ int nufs_write(const char *path, const char *buf, size_t size, off_t offset, str
     return bytes_written;
 }
 
-// Initialize FUSE Operations
+// FUSE operations
 void nufs_init_ops(struct fuse_operations *ops) {
     memset(ops, 0, sizeof(struct fuse_operations));
     ops->access = nufs_access;
