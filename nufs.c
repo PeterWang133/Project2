@@ -15,220 +15,238 @@
 #include <fuse.h>
 
 #define MAX_FILES 128
-#define MAX_BLOCKS_PER_FILE 128
+#define MAX_PATH_LEN 256
+#define MAX_BLOCKS 8 // Support up to 8 blocks per file
+
+#define DEBUG 1 // Set to 0 to disable debug output
+#define log_debug(fmt, ...) \
+    do { if (DEBUG) fprintf(stderr, fmt, ##__VA_ARGS__); } while (0)
 
 typedef struct {
-    char path[256];
-    int size;
-    int blocks[MAX_BLOCKS_PER_FILE];
-    int block_count;
-    mode_t mode;
+    char name[MAX_PATH_LEN];   // Name of the file or directory
+    mode_t mode;               // File permissions and type
+    size_t size;               // File size in bytes
+    time_t atime;              // Last access time
+    time_t mtime;              // Last modification time
+    time_t ctime;              // Creation time
+    int is_dir;                // 1 for directories, 0 for files
+    int parent_index;          // Parent directory inode index (-1 for root)
+    int block_indices[MAX_BLOCKS]; // Array of block indices
 } inode_t;
 
-static inode_t inodes[MAX_FILES];
-static int inode_count = 0;
+inode_t inode_table[MAX_FILES];
 
-// Save inodes to disk
-void save_inodes() {
-    void *block = blocks_get_block(1); // Block 1 reserved for metadata
-    memcpy(block, inodes, sizeof(inodes));
-    printf("Saved inodes to disk.\n");
-}
-
-// Load inodes from disk
-void load_inodes() {
-    void *block = blocks_get_block(1); // Block 1 reserved for metadata
-    memcpy(inodes, block, sizeof(inodes));
-    inode_count = 0;
+// Initialize the inode table
+void init_inode_table() {
     for (int i = 0; i < MAX_FILES; i++) {
-        if (strlen(inodes[i].path) > 0) {
-            inode_count++;
+        memset(&inode_table[i], 0, sizeof(inode_t));
+        inode_table[i].parent_index = -1; // Default to no parent
+        for (int j = 0; j < MAX_BLOCKS; j++) {
+            inode_table[i].block_indices[j] = -1; // Mark all blocks as unallocated
         }
     }
-    printf("Loaded inodes from disk.\n");
+    // Initialize root directory
+    strncpy(inode_table[0].name, "/", MAX_PATH_LEN);
+    inode_table[0].mode = S_IFDIR | 0755;
+    inode_table[0].is_dir = 1;
+    inode_table[0].ctime = inode_table[0].mtime = inode_table[0].atime = time(NULL);
 }
 
-// Initialize storage
-void storage_init(const char *path) {
-    blocks_init(path);
-    load_inodes();
-}
-
-// Find an inode by path
-inode_t *inode_lookup(const char *path) {
-    for (int i = 0; i < inode_count; i++) {
-        if (strcmp(inodes[i].path, path) == 0) {
-            return &inodes[i];
+// Find an inode by name and parent index
+int find_inode(const char *path, int parent_index) {
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (strcmp(inode_table[i].name, path) == 0 && inode_table[i].parent_index == parent_index) {
+            return i;
         }
     }
-    return NULL;
+    return -1; // Not found
 }
 
 // Create a new inode
-inode_t *inode_create(const char *path, mode_t mode) {
-    if (inode_count >= MAX_FILES) {
-        return NULL;
+int create_inode(const char *name, mode_t mode, int is_dir, int parent_index) {
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inode_table[i].name[0] == '\0') { // Empty slot
+            strncpy(inode_table[i].name, name, MAX_PATH_LEN);
+            inode_table[i].mode = mode;
+            inode_table[i].is_dir = is_dir;
+            inode_table[i].size = 0;
+            inode_table[i].ctime = inode_table[i].mtime = inode_table[i].atime = time(NULL);
+            inode_table[i].parent_index = parent_index;
+            for (int j = 0; j < MAX_BLOCKS; j++) {
+                inode_table[i].block_indices[j] = -1; // Initialize blocks
+            }
+            if (!is_dir) {
+                int block = alloc_block();
+                if (block == -1) {
+                    return -ENOSPC;
+                }
+                inode_table[i].block_indices[0] = block;
+            }
+            return i;
+        }
     }
-
-    inode_t *node = &inodes[inode_count++];
-    strncpy(node->path, path, sizeof(node->path) - 1);
-    node->size = 0;
-    node->block_count = 0;
-    node->mode = mode;
-    save_inodes();
-    return node;
+    return -ENOSPC; // No space left
 }
 
-// Allocate a new block
-int inode_add_block(inode_t *node) {
-    if (node->block_count >= MAX_BLOCKS_PER_FILE) {
-        return -1;
-    }
-    int block_index = alloc_block();
-    if (block_index == -1) {
-        return -1;
-    }
-    node->blocks[node->block_count++] = block_index;
-    save_inodes();
-    return block_index;
-}
-
-// File Operations
+// Access a file or directory
 int nufs_access(const char *path, int mask) {
-    inode_t *node = inode_lookup(path);
-    int rv = (node != NULL) ? 0 : -ENOENT;
-    printf("access(%s, %04o) -> %d\n", path, mask, rv);
-    return rv;
+    return find_inode(path, 0) >= 0 ? 0 : -ENOENT;
 }
 
+// Get file attributes
 int nufs_getattr(const char *path, struct stat *st) {
-    inode_t *node = inode_lookup(path);
-    if (!node) return -ENOENT;
-
-    memset(st, 0, sizeof(struct stat));
-    st->st_mode = node->mode;
-    st->st_size = node->size;
-    st->st_uid = getuid();
-    printf("getattr(%s) -> {mode: %04o, size: %lld}\n", path, st->st_mode, (long long)st->st_size);
+    int idx = find_inode(path, 0);
+    if (idx == -1) {
+        return -ENOENT;
+    }
+    inode_t *inode = &inode_table[idx];
+    st->st_mode = inode->mode;
+    st->st_size = inode->size;
+    st->st_atime = inode->atime;
+    st->st_mtime = inode->mtime;
+    st->st_ctime = inode->ctime;
     return 0;
 }
 
+// Read directory contents
 int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
+    int parent_index = find_inode(path, 0);
+    if (parent_index == -1 || !inode_table[parent_index].is_dir) {
+        return -ENOENT;
+    }
     filler(buf, ".", NULL, 0);
-    filler(buf, "..", NULL, 0);
+    if (parent_index != 0) {
+        filler(buf, "..", NULL, 0);
+    }
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inode_table[i].parent_index == parent_index && inode_table[i].name[0] != '\0') {
+            filler(buf, inode_table[i].name, NULL, 0);
+        }
+    }
+    return 0;
+}
 
-    for (int i = 0; i < inode_count; i++) {
-        const char *entry_path = inodes[i].path;
-        if (strncmp(entry_path, path, strlen(path)) == 0) {
-            const char *name = entry_path + strlen(path);
-            if (name[0] == '/') {
-                name++;
-                filler(buf, name, NULL, 0);
+// Create a file
+int nufs_mknod(const char *path, mode_t mode, dev_t dev) {
+    if (find_inode(path, 0) >= 0) {
+        return -EEXIST;
+    }
+    return create_inode(path, mode, 0, 0);
+}
+
+// Create a directory
+int nufs_mkdir(const char *path, mode_t mode) {
+    if (find_inode(path, 0) >= 0) {
+        return -EEXIST;
+    }
+    return create_inode(path, mode | S_IFDIR, 1, 0);
+}
+
+// Remove a file
+int nufs_unlink(const char *path) {
+    int idx = find_inode(path, 0);
+    if (idx == -1) {
+        return -ENOENT;
+    }
+    inode_t *inode = &inode_table[idx];
+    for (int i = 0; i < MAX_BLOCKS; i++) {
+        if (inode->block_indices[i] != -1) {
+            free_block(inode->block_indices[i]);
+        }
+    }
+    memset(inode, 0, sizeof(inode_t));
+    return 0;
+}
+
+// Remove a directory
+int nufs_rmdir(const char *path) {
+    int idx = find_inode(path, 0);
+    if (idx == -1 || !inode_table[idx].is_dir) {
+        return -ENOENT;
+    }
+    for (int i = 0; i < MAX_FILES; i++) {
+        if (inode_table[i].parent_index == idx) {
+            return -ENOTEMPTY;
+        }
+    }
+    memset(&inode_table[idx], 0, sizeof(inode_t));
+    return 0;
+}
+
+// Rename a file or directory
+int nufs_rename(const char *from, const char *to) {
+    int idx = find_inode(from, 0);
+    if (idx == -1) {
+        return -ENOENT;
+    }
+    strncpy(inode_table[idx].name, to, MAX_PATH_LEN);
+    return 0;
+}
+
+// Write data to a file
+int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    int idx = find_inode(path, 0);
+    if (idx == -1) {
+        return -ENOENT;
+    }
+    inode_t *inode = &inode_table[idx];
+    size_t remaining = size, written = 0;
+    while (remaining > 0) {
+        int block_idx = (offset + written) / BLOCK_SIZE;
+        if (block_idx >= MAX_BLOCKS) {
+            return -ENOSPC;
+        }
+        if (inode->block_indices[block_idx] == -1) {
+            inode->block_indices[block_idx] = alloc_block();
+            if (inode->block_indices[block_idx] == -1) {
+                return -ENOSPC;
             }
         }
-    }
-
-    printf("readdir(%s)\n", path);
-    return 0;
-}
-
-int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
-    if (inode_lookup(path)) return -EEXIST;
-
-    inode_t *node = inode_create(path, mode | S_IFREG);
-    int rv = (node != NULL) ? 0 : -ENOMEM;
-    printf("mknod(%s, %04o) -> %d\n", path, mode, rv);
-    return rv;
-}
-
-int nufs_mkdir(const char *path, mode_t mode) {
-    if (inode_lookup(path)) return -EEXIST;
-
-    inode_t *node = inode_create(path, mode | S_IFDIR);
-    int rv = (node != NULL) ? 0 : -ENOMEM;
-    printf("mkdir(%s) -> %d\n", path, rv);
-    return rv;
-}
-
-int nufs_rename(const char *from, const char *to) {
-    inode_t *node = inode_lookup(from);
-    if (!node) return -ENOENT;
-
-    strncpy(node->path, to, sizeof(node->path) - 1);
-    save_inodes();
-    printf("rename(%s -> %s)\n", from, to);
-    return 0;
-}
-
-int nufs_unlink(const char *path) {
-    inode_t *node = inode_lookup(path);
-    if (!node) return -ENOENT;
-
-    for (int i = 0; i < node->block_count; i++) {
-        free_block(node->blocks[i]);
-    }
-    memmove(node, node + 1, (inode_count - (node - inodes) - 1) * sizeof(inode_t));
-    inode_count--;
-    save_inodes();
-    printf("unlink(%s) -> 0\n", path);
-    return 0;
-}
-
-int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    inode_t *node = inode_lookup(path);
-    if (!node) return -ENOENT;
-
-    size_t bytes_read = 0;
-    while (size > 0 && offset < node->size) {
-        int block_idx = offset / BLOCK_SIZE;
-        if (block_idx >= node->block_count) break;
-
-        void *block = blocks_get_block(node->blocks[block_idx]);
-        size_t block_offset = offset % BLOCK_SIZE;
-        size_t to_read = BLOCK_SIZE - block_offset;
-        if (to_read > size) to_read = size;
-        if (to_read > node->size - offset) to_read = node->size - offset;
-
-        memcpy(buf + bytes_read, block + block_offset, to_read);
-        bytes_read += to_read;
-        size -= to_read;
-        offset += to_read;
-    }
-
-    printf("read(%s, %ld bytes, @+%lld) -> %ld\n", path, size, (long long)offset, bytes_read);
-    return bytes_read;
-}
-
-int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    inode_t *node = inode_lookup(path);
-    if (!node) return -ENOENT;
-
-    size_t bytes_written = 0;
-    while (size > 0) {
-        int block_idx = offset / BLOCK_SIZE;
-        if (block_idx >= node->block_count) {
-            if (inode_add_block(node) == -1) break;
-        }
-
-        void *block = blocks_get_block(node->blocks[block_idx]);
-        size_t block_offset = offset % BLOCK_SIZE;
+        void *block = blocks_get_block(inode->block_indices[block_idx]);
+        size_t block_offset = (offset + written) % BLOCK_SIZE;
         size_t to_write = BLOCK_SIZE - block_offset;
-        if (to_write > size) to_write = size;
-
-        memcpy(block + block_offset, buf + bytes_written, to_write);
-        bytes_written += to_write;
-        size -= to_write;
-        offset += to_write;
+        if (to_write > remaining) to_write = remaining;
+        memcpy(block + block_offset, buf + written, to_write);
+        written += to_write;
+        remaining -= to_write;
     }
-
-    if (offset > node->size) node->size = offset;
-    save_inodes();
-
-    printf("write(%s, %ld bytes, @+%lld) -> %ld\n", path, size, (long long)offset, bytes_written);
-    return bytes_written;
+    inode->size = offset + written;
+    inode->mtime = time(NULL);
+    return written;
 }
 
-// FUSE operations
+// Read data from a file
+int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    int idx = find_inode(path, 0);
+    if (idx == -1) {
+        return -ENOENT;
+    }
+    inode_t *inode = &inode_table[idx];
+    if (offset >= inode->size) {
+        return 0;
+    }
+    size_t to_read = size;
+    if (offset + size > inode->size) {
+        to_read = inode->size - offset;
+    }
+    size_t remaining = to_read, read = 0;
+    while (remaining > 0) {
+        int block_idx = (offset + read) / BLOCK_SIZE;
+        if (block_idx >= MAX_BLOCKS || inode->block_indices[block_idx] == -1) {
+            break;
+        }
+        void *block = blocks_get_block(inode->block_indices[block_idx]);
+        size_t block_offset = (offset + read) % BLOCK_SIZE;
+        size_t to_copy = BLOCK_SIZE - block_offset;
+        if (to_copy > remaining) to_copy = remaining;
+        memcpy(buf + read, block + block_offset, to_copy);
+        read += to_copy;
+        remaining -= to_copy;
+    }
+    return read;
+}
+
+// Initialize FUSE operations
 void nufs_init_ops(struct fuse_operations *ops) {
     memset(ops, 0, sizeof(struct fuse_operations));
     ops->access = nufs_access;
@@ -236,18 +254,18 @@ void nufs_init_ops(struct fuse_operations *ops) {
     ops->readdir = nufs_readdir;
     ops->mknod = nufs_mknod;
     ops->mkdir = nufs_mkdir;
-    ops->rename = nufs_rename;
     ops->unlink = nufs_unlink;
-    ops->read = nufs_read;
+    ops->rmdir = nufs_rmdir;
+    ops->rename = nufs_rename;
     ops->write = nufs_write;
+    ops->read = nufs_read;
 }
 
+// Main entry point
 int main(int argc, char *argv[]) {
-    assert(argc > 2 && argc < 6);
-    printf("Mounting filesystem with disk image: %s\n", argv[argc - 1]);
-    storage_init(argv[argc - 1]);
-
+    blocks_init(argv[--argc]);
+    init_inode_table();
     struct fuse_operations nufs_ops;
     nufs_init_ops(&nufs_ops);
-    return fuse_main(argc - 1, argv, &nufs_ops, NULL);
+    return fuse_main(argc, argv, &nufs_ops, NULL);
 }
