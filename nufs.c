@@ -299,7 +299,56 @@ int nufs_unlink(const char *path) {
 }
 
 
-int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    inode_t *inode = inode_lookup(path);
+    if (!inode) {
+        fprintf(stderr, "write: inode not found for path %s\n", path);
+        return -ENOENT;
+    }
+
+    // Expand file size if necessary
+    if (offset + size > inode->size) {
+        inode->size = offset + size;
+    }
+
+    size_t total_written = 0;
+
+    while (size > 0) {
+        int block_index = (offset + total_written) / BLOCK_SIZE;
+        size_t block_offset = (offset + total_written) % BLOCK_SIZE;
+        size_t to_write = BLOCK_SIZE - block_offset;
+        if (to_write > size) {
+            to_write = size;
+        }
+
+        // Allocate a new block if necessary
+        if (block_index >= inode->block_count) {
+            int new_block = inode_add_block(inode);
+            if (new_block < 0) {
+                fprintf(stderr, "write: failed to allocate block\n");
+                return total_written ? total_written : -ENOSPC;
+            }
+        }
+
+        int block_num = inode->blocks[block_index];
+        void *block = blocks_get_block(block_num);
+        if (!block) {
+            fprintf(stderr, "write: failed to retrieve block %d\n", block_num);
+            return -EIO;
+        }
+
+        memcpy((char *)block + block_offset, buf + total_written, to_write);
+
+        total_written += to_write;
+        size -= to_write;
+    }
+
+    save_inodes();
+    printf("write(%s, %zu bytes, offset %ld) -> %zu bytes written\n", path, total_written, offset, total_written);
+    return total_written;
+}
+
+static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *inode = inode_lookup(path);
     if (!inode) {
         fprintf(stderr, "read: inode not found for path %s\n", path);
@@ -345,53 +394,6 @@ int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
 
     printf("read(%s, %zu bytes, offset %ld) -> %zu bytes read\n", path, total_read, offset, total_read);
     return total_read;
-}
-
-static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    inode_t *inode = inode_lookup(path);
-    if (!inode) {
-        fprintf(stderr, "write: inode not found for path %s\n", path);
-        return -ENOENT;
-    }
-
-    if (offset + size > inode->size) {
-        inode->size = offset + size; // Expand file size
-    }
-
-    size_t total_written = 0;
-
-    while (size > 0) {
-        int block_index = (offset + total_written) / BLOCK_SIZE;
-        size_t block_offset = (offset + total_written) % BLOCK_SIZE;
-        size_t to_write = BLOCK_SIZE - block_offset;
-        if (to_write > size) {
-            to_write = size;
-        }
-
-        if (block_index >= inode->block_count) {
-            int new_block = inode_add_block(inode);
-            if (new_block < 0) {
-                fprintf(stderr, "write: failed to allocate block\n");
-                return total_written;
-            }
-        }
-
-        int block_num = inode->blocks[block_index];
-        void *block = blocks_get_block(block_num);
-        if (!block) {
-            fprintf(stderr, "write: failed to retrieve block %d\n", block_num);
-            return -EIO;
-        }
-
-        memcpy((char *)block + block_offset, buf + total_written, to_write);
-
-        total_written += to_write;
-        size -= to_write;
-    }
-
-    save_inodes();
-    printf("write(%s, %zu bytes, offset %ld) -> %zu bytes written\n", path, total_written, offset, total_written);
-    return total_written;
 }
 
 // FUSE operations
