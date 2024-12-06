@@ -89,7 +89,6 @@ void storage_init(const char *path) {
     printf("Storage initialized successfully.\n");
 }
 
-
 // Find an inode by path
 inode_t *inode_lookup(const char *path) {
     for (int i = 0; i < inode_count; i++) {
@@ -108,6 +107,7 @@ inode_t *inode_create(const char *path, mode_t mode) {
 
     inode_t *node = &inodes[inode_count++];
     strncpy(node->path, path, sizeof(node->path) - 1);
+    node->path[sizeof(node->path) - 1] = '\0';
     node->size = 0;
     node->block_count = 0;
     node->mode = mode;
@@ -177,7 +177,6 @@ int nufs_access(const char *path, int mask) {
     return rv;
 }
 
-
 int nufs_getattr(const char *path, struct stat *st) {
     inode_t *node = inode_lookup(path);
     if (!node) {
@@ -186,11 +185,11 @@ int nufs_getattr(const char *path, struct stat *st) {
     }
 
     memset(st, 0, sizeof(struct stat));
-    st->st_mode = node->mode; 
-    st->st_size = node->size; 
+    st->st_mode = node->mode;
+    st->st_size = node->size;
     st->st_nlink = 1;
-    st->st_uid = getuid(); 
-    st->st_gid = getgid(); 
+    st->st_uid = getuid();
+    st->st_gid = getgid();
     st->st_blocks = (node->size + BLOCK_SIZE - 1) / BLOCK_SIZE;
     st->st_blksize = BLOCK_SIZE;
 
@@ -218,8 +217,6 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     return 0;
 }
 
-
-
 static int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
     printf("mknod(%s, %o)\n", path, mode);
 
@@ -243,7 +240,6 @@ static int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
     printf("mknod: successfully created file %s\n", path);
     return 0;
 }
-
 
 int nufs_mkdir(const char *path, mode_t mode) {
     printf("mkdir(%s, %o)\n", path, mode);
@@ -269,7 +265,6 @@ int nufs_mkdir(const char *path, mode_t mode) {
     printf("mkdir: successfully created directory %s\n", path);
     return 0;
 }
-
 
 int nufs_unlink(const char *path) {
     inode_t *inode = inode_lookup(path);
@@ -297,7 +292,6 @@ int nufs_unlink(const char *path) {
     printf("unlink(%s) -> 0\n", path);
     return 0;
 }
-
 
 static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *inode = inode_lookup(path);
@@ -410,7 +404,6 @@ void nufs_init_ops(struct fuse_operations *ops) {
     ops->rename = nufs_rename;
 }
 
-
 int main(int argc, char *argv[]) {
     assert(argc > 2 && argc < 6);
     printf("Mounting filesystem with disk image: %s\n", argv[argc - 1]);
@@ -422,4 +415,3 @@ int main(int argc, char *argv[]) {
     blocks_free();
     return ret;
 }
-
