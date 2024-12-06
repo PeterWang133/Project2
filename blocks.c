@@ -55,7 +55,7 @@ void blocks_free() {
     }
 }
 
-// Get a pointer to the specified block.
+// Get a pointer to the specified block
 void *blocks_get_block(int bnum) {
     if (bnum < 0 || bnum >= BLOCK_COUNT) {
         fprintf(stderr, "blocks_get_block: invalid block number %d\n", bnum);
@@ -75,27 +75,40 @@ void *get_inode_bitmap() {
     return block + BLOCK_BITMAP_SIZE;
 }
 
-// Allocate a new block.
+// Allocate a new block
 int alloc_block() {
     void *bbm = get_blocks_bitmap();
-    for (int i = 1; i < BLOCK_COUNT; ++i) {
-        if (!bitmap_get(bbm, i)) {
-            bitmap_put(bbm, i, 1);
+    for (int i = 1; i < BLOCK_COUNT; ++i) { // Start from 1, reserve 0 for metadata
+        if (!bitmap_get(bbm, i)) {         // Find the first free block
+            bitmap_put(bbm, i, 1);         // Mark block as allocated
+            void *block = blocks_get_block(i);
+            if (block) {
+                memset(block, 0, BLOCK_SIZE); // Initialize block to zero
+            }
             printf("+ alloc_block() -> %d\n", i);
             return i;
         }
     }
     fprintf(stderr, "alloc_block: no free blocks available\n");
-    return -ENOSPC;
+    return -ENOSPC; // No space left
 }
 
-// Free a block.
+// Free a block
 void free_block(int bnum) {
     if (bnum <= 0 || bnum >= BLOCK_COUNT) {
         fprintf(stderr, "free_block: invalid block number %d\n", bnum);
         return;
     }
-    printf("+ free_block(%d)\n", bnum);
+
     void *bbm = get_blocks_bitmap();
-    bitmap_put(bbm, bnum, 0);
+    if (bitmap_get(bbm, bnum)) {
+        bitmap_put(bbm, bnum, 0); // Mark block as free in the bitmap
+        void *block = blocks_get_block(bnum);
+        if (block) {
+            memset(block, 0, BLOCK_SIZE); // Clear the block
+        }
+        printf("+ free_block(%d)\n", bnum);
+    } else {
+        fprintf(stderr, "free_block: block %d is already free\n", bnum);
+    }
 }
