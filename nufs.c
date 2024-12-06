@@ -208,18 +208,18 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
 
     if (strcmp(path, "/") == 0) {
         for (int i = 0; i < inode_count; i++) {
-            if (inodes[i].mode & S_IFDIR || inodes[i].mode & S_IFREG) {
-                const char *name = inodes[i].path + 1; 
+            if ((inodes[i].mode & S_IFDIR) || (inodes[i].mode & S_IFREG)) {
+                const char *name = inodes[i].path + 1; // Skip leading "/"
                 if (strlen(name) > 0 && strchr(name, '/') == NULL) {
                     filler(buf, name, NULL, 0);
                 }
             }
-
         }
     }
 
     return 0;
 }
+
 
 
 static int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
@@ -274,17 +274,29 @@ int nufs_mkdir(const char *path, mode_t mode) {
 
 
 int nufs_unlink(const char *path) {
-    inode_t *node = inode_lookup(path);
-    if (!node || (node->mode & S_IFDIR)) {
+    inode_t *inode = inode_lookup(path);
+    if (!inode) {
+        fprintf(stderr, "unlink: file %s not found\n", path);
         return -ENOENT;
     }
-    // Remove directory entry
-    for (int i = 0; i < inode_count; i++) {
-        if (strcmp(inodes[i].path, path) == 0) {
-            inodes[i].path[0] = '\0'; // Mark as deleted
-            break;
+
+    if (inode->mode & S_IFDIR) {
+        fprintf(stderr, "unlink: cannot unlink directory %s\n", path);
+        return -EISDIR;
+    }
+
+    for (int i = 0; i < inode->block_count; i++) {
+        if (inode->blocks[i] >= 0) {
+            free_block(inode->blocks[i]);
         }
     }
+
+    int index = inode - inodes; // Compute the inode index
+    memmove(&inodes[index], &inodes[index + 1], (inode_count - index - 1) * sizeof(inode_t));
+    memset(&inodes[--inode_count], 0, sizeof(inode_t));
+
+    save_inodes();
+    printf("unlink(%s) -> 0\n", path);
     return 0;
 }
 
@@ -317,13 +329,14 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
 
         if (block_index >= inode->block_count || inode->blocks[block_index] < 0) {
             fprintf(stderr, "read: block index %d out of range or uninitialized\n", block_index);
-            return total_read; // Stop reading if invalid block
+            break;
         }
+
         int block_num = inode->blocks[block_index];
         void *block = blocks_get_block(block_num);
         if (!block) {
             fprintf(stderr, "read: failed to retrieve block %d\n", block_num);
-            return -EIO; // Error retrieving block
+            return -EIO;
         }
 
         memcpy(buf + total_read, (char *)block + block_offset, to_read);
@@ -337,23 +350,19 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
 }
 
 static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    // Lookup the inode for the given path
     inode_t *inode = inode_lookup(path);
     if (!inode) {
-        printf("write: inode not found for path %s\n", path);
+        fprintf(stderr, "write: inode not found for path %s\n", path);
         return -ENOENT;
     }
 
-    // Expand file size if necessary
     if (offset + size > inode->size) {
-        inode->size = offset + size;
+        inode->size = offset + size; // Expand file size
     }
 
     size_t total_written = 0;
 
-    // Write data block by block
     while (size > 0) {
-        // Calculate the block index and the offset within the block
         int block_index = (offset + total_written) / BLOCK_SIZE;
         size_t block_offset = (offset + total_written) % BLOCK_SIZE;
         size_t to_write = BLOCK_SIZE - block_offset;
@@ -361,7 +370,6 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
             to_write = size;
         }
 
-        // Allocate a block if necessary
         if (block_index >= inode->block_count) {
             if (inode_add_block(inode) < 0) {
                 fprintf(stderr, "write: failed to allocate block\n");
@@ -369,36 +377,23 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
             }
         }
 
-
-        // Get the block number and ensure it's valid
         int block_num = inode->blocks[block_index];
-        if (block_num < 0) {
-            printf("write: invalid block number %d at block_index %d\n", block_num, block_index);
-            return -EIO; // Invalid block mapping
-        }
-
-        // Get the actual block and write the data
         void *block = blocks_get_block(block_num);
         if (!block) {
-            printf("write: failed to get block number %d\n", block_num);
-            return -EIO; // Failed to retrieve block
+            fprintf(stderr, "write: failed to retrieve block %d\n", block_num);
+            return -EIO;
         }
 
         memcpy((char *)block + block_offset, buf + total_written, to_write);
 
-        // Update counters
         total_written += to_write;
         size -= to_write;
     }
 
-    // Save inode metadata after writing
     save_inodes();
-    printf("write(%s, %zu bytes, offset %ld) -> %zu bytes written\n",
-       path, (size_t)total_written, offset, (size_t)total_written);
-
+    printf("write(%s, %zu bytes, offset %ld) -> %zu bytes written\n", path, total_written, offset, total_written);
     return total_written;
 }
-
 
 // FUSE operations
 void nufs_init_ops(struct fuse_operations *ops) {
