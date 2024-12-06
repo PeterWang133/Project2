@@ -7,6 +7,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/mman.h>
 #include <stdlib.h>
 #include "blocks.h"
 #include "bitmap.h"
@@ -16,6 +17,13 @@
 
 #define MAX_FILES 128
 #define MAX_BLOCKS_PER_FILE 128
+
+// Define the metadata layout
+#define INODE_META_BLOCK 1
+#define FIRST_INODE_BLOCK 2
+#define LAST_INODE_BLOCK 27
+#define FIRST_DATA_BLOCK 28
+#define INODES_PER_BLOCK (BLOCK_SIZE / sizeof(inode_t))
 
 typedef struct {
     char path[256];
@@ -50,7 +58,7 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
 void nufs_init_ops(struct fuse_operations *ops);
 
 void save_inodes() {
-    // Write inode_count to block INODE_META_BLOCK
+    // Write inode_count to meta block
     void *meta_block = blocks_get_block(INODE_META_BLOCK);
     if (!meta_block) {
         fprintf(stderr, "save_inodes: Failed to access block %d\n", INODE_META_BLOCK);
@@ -58,7 +66,6 @@ void save_inodes() {
     }
     memcpy(meta_block, &inode_count, sizeof(inode_count));
 
-    // Now write inodes across blocks 2..27
     int total = inode_count;
     int written = 0;
     int block_num = FIRST_INODE_BLOCK;
@@ -77,6 +84,11 @@ void save_inodes() {
         memcpy(b, &inodes[written], count * sizeof(inode_t));
         written += count;
         block_num++;
+    }
+
+    // Ensure data is written to disk
+    if (msync(blocks_base, NUFS_SIZE, MS_SYNC) == -1) {
+        perror("msync");
     }
 
     printf("Saved %d inodes to disk.\n", inode_count);
@@ -111,12 +123,10 @@ void load_inodes() {
         block_num++;
     }
 
-    // No recalculation of inode_count here; trust the stored value
+    // Trust the stored inode_count
     printf("Loaded %d inodes from disk.\n", inode_count);
 }
 
-
-// Initialize storage
 void storage_init(const char *path) {
     printf("Initializing storage with disk image: %s\n", path);
 
@@ -131,16 +141,14 @@ void storage_init(const char *path) {
     printf("Storage initialized successfully.\n");
 }
 
-// Find an inode by path
 inode_t *inode_lookup(const char *path) {
     char normalized_path[256];
-    // Normalize path: trim trailing slashes, except for root "/"
     strncpy(normalized_path, path, sizeof(normalized_path) - 1);
     normalized_path[sizeof(normalized_path) - 1] = '\0';
 
     size_t len = strlen(normalized_path);
     while (len > 1 && normalized_path[len - 1] == '/') {
-        normalized_path[--len] = '\0'; // Remove trailing slashes
+        normalized_path[--len] = '\0';
     }
 
     for (int i = 0; i < inode_count; i++) {
@@ -151,7 +159,6 @@ inode_t *inode_lookup(const char *path) {
     return NULL;
 }
 
-// Create a new inode
 inode_t *inode_create(const char *path, mode_t mode) {
     if (inode_count >= MAX_FILES) {
         return NULL;
@@ -169,7 +176,6 @@ inode_t *inode_create(const char *path, mode_t mode) {
     return node;
 }
 
-// Allocate a new block for the given inode
 int inode_add_block(inode_t *node) {
     if (node->block_count >= MAX_BLOCKS_PER_FILE) {
         fprintf(stderr, "inode_add_block: max blocks reached for inode\n");
@@ -201,17 +207,14 @@ int nufs_rename(const char *from, const char *to) {
         return -EEXIST;
     }
 
-    // Check path length
     if (strlen(to) >= sizeof(inode->path)) {
         fprintf(stderr, "rename: destination path %s is too long\n", to);
         return -ENAMETOOLONG;
     }
 
-    // Update the path in the inode
     strncpy(inode->path, to, sizeof(inode->path) - 1);
     inode->path[sizeof(inode->path) - 1] = '\0';
 
-    // Update modification and change times
     time_t now = time(NULL);
     inode->mtime = now;
     inode->ctime = now;
@@ -221,21 +224,15 @@ int nufs_rename(const char *from, const char *to) {
     return 0;
 }
 
-// Check if the file or directory exists and has the required permissions
 int nufs_access(const char *path, int mask) {
-    // Lookup the inode for the given path
     inode_t *node = inode_lookup(path);
     if (!node) {
         printf("access: file or directory %s not found\n", path);
-        return -ENOENT; // Return "No such file or directory"
+        return -ENOENT;
     }
 
-    // Access check is currently basic, as permissions aren't implemented fully
-    int rv = 0; // For simplicity, assume all files are accessible
-
-    // Log the access operation
-    printf("access(%s, %04o) -> %d\n", path, mask, rv);
-    return rv;
+    printf("access(%s, %04o) -> 0\n", path, mask);
+    return 0;
 }
 
 int nufs_getattr(const char *path, struct stat *st) {
@@ -268,15 +265,12 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     filler(buf, "..", NULL, 0);
 
     for (int i = 0; i < inode_count; i++) {
-        // If path is "/", show top-level files and directories
         if (strcmp(path, "/") == 0) {
-            const char *name = inodes[i].path + 1; // Skip leading "/"
+            const char *name = inodes[i].path + 1;
             if (strlen(name) > 0 && strchr(name, '/') == NULL) {
                 filler(buf, name, NULL, 0);
             }
-        } 
-        // For nested paths, show contents of that specific directory
-        else {
+        } else {
             size_t path_len = strlen(path);
             if (strncmp(inodes[i].path, path, path_len) == 0 && 
                 strlen(inodes[i].path) > path_len && 
@@ -319,23 +313,18 @@ static int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
 int nufs_mkdir(const char *path, mode_t mode) {
     printf("mkdir(%s, %o)\n", path, mode);
 
-    // Check if the directory already exists
     if (inode_lookup(path)) {
         printf("mkdir: directory %s already exists\n", path);
         return -EEXIST;
     }
 
-    // Create a new inode for the directory
-    inode_t *node = inode_create(path, mode | S_IFDIR); // Set the directory flag
+    inode_t *node = inode_create(path, mode | S_IFDIR);
     if (!node) {
         printf("mkdir: failed to create inode for directory %s\n", path);
-        return -ENOMEM; // No memory left
+        return -ENOMEM;
     }
 
-    // Initialize directory-specific metadata (if any)
-    node->size = 0; // Initially, the directory is empty
-
-    // Save changes to disk
+    node->size = 0;
     save_inodes();
     printf("mkdir: successfully created directory %s\n", path);
     return 0;
@@ -353,15 +342,13 @@ int nufs_unlink(const char *path) {
         return -EISDIR;
     }
 
-    // Free all blocks associated with the file
     for (int i = 0; i < inode->block_count; i++) {
         if (inode->blocks[i] >= 0) {
             free_block(inode->blocks[i]);
         }
     }
 
-    // Find and remove the inode
-    int index = inode - inodes; // Compute the inode index
+    int index = inode - inodes;
     memmove(&inodes[index], &inodes[index + 1], (inode_count - index - 1) * sizeof(inode_t));
     memset(&inodes[inode_count - 1], 0, sizeof(inode_t));
     inode_count--;
@@ -378,14 +365,12 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         return -ENOENT;
     }
 
-    // Ensure the file is a regular file
     if (!(inode->mode & S_IFREG)) {
-        fprintf(stderr, "write: cannot write to non-regular file %s\n", path);
+        fprintf(stderr, "write: cannot write to directory %s\n", path);
         return -EISDIR;
     }
 
-    size_t total_written = 0; 
-
+    size_t total_written = 0;
     while (total_written < size) {
         int block_index = (offset + total_written) / BLOCK_SIZE;
         size_t block_offset = (offset + total_written) % BLOCK_SIZE;
@@ -395,7 +380,6 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
             to_write = size - total_written;
         }
 
-        // Allocate a new block if needed
         if (block_index >= inode->block_count) {
             int new_block = inode_add_block(inode);
             if (new_block < 0) {
@@ -407,7 +391,7 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         int block_num = inode->blocks[block_index];
         void *block = blocks_get_block(block_num);
         if (!block) {
-            fprintf(stderr, "write: failed to retrieve block %d\n", block_num);
+            fprintf(stderr, "write: failed to get block %d\n", block_num);
             return -EIO;
         }
 
@@ -415,12 +399,10 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         total_written += to_write;
     }
 
-    // Update file size if we've written beyond current size
     if (offset + total_written > inode->size) {
         inode->size = offset + total_written;
     }
 
-    // Update timestamps
     time_t now = time(NULL);
     inode->mtime = now;
     inode->ctime = now;
@@ -436,25 +418,21 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         return -ENOENT;
     }
 
-    // Ensure the file is a regular file
     if (!(inode->mode & S_IFREG)) {
-        fprintf(stderr, "read: cannot read from non-regular file %s\n", path);
+        fprintf(stderr, "read: cannot read directory %s\n", path);
         return -EISDIR;
     }
 
-    // Check if we're past the end of the file
     if (offset >= inode->size) {
         return 0;
     }
 
-    // Adjust read size if it would go beyond file size
     size_t remaining = inode->size - offset;
     if (size > remaining) {
         size = remaining;
     }
 
     size_t total_read = 0;
-
     while (total_read < size) {
         int block_index = (offset + total_read) / BLOCK_SIZE;
         size_t block_offset = (offset + total_read) % BLOCK_SIZE;
@@ -465,13 +443,13 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         }
 
         if (block_index >= inode->block_count) {
-            break; // No more blocks to read
+            break;
         }
 
         int block_num = inode->blocks[block_index];
         void *block = blocks_get_block(block_num);
         if (!block) {
-            fprintf(stderr, "read: failed to retrieve block %d for path '%s'\n", block_num, path);
+            fprintf(stderr, "read: failed to get block %d for path '%s'\n", block_num, path);
             return -EIO;
         }
 
@@ -479,14 +457,12 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         total_read += to_read;
     }
 
-    // Update access time
     inode->atime = time(NULL);
     save_inodes();
 
     return total_read;
 }
 
-// FUSE operations
 void nufs_init_ops(struct fuse_operations *ops) {
     memset(ops, 0, sizeof(struct fuse_operations));
     ops->access = nufs_access;
