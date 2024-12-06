@@ -69,13 +69,13 @@ void load_inodes() {
     inode_count = 0;
 
     for (int i = 0; i < MAX_FILES; i++) {
-        // Ensure path is a valid string
-        if (strlen(inodes[i].path) > 0) {
+        if (strlen(inodes[i].path) > 0) { // Valid path indicates a valid inode
             inode_count++;
         }
     }
     printf("Loaded inodes from disk.\n");
 }
+
 
 // Initialize storage
 void storage_init(const char *path) {
@@ -98,10 +98,9 @@ inode_t *inode_lookup(const char *path) {
     strncpy(normalized_path, path, sizeof(normalized_path) - 1);
     normalized_path[sizeof(normalized_path) - 1] = '\0';
 
-    // Remove trailing slash (except for the root path)
     size_t len = strlen(normalized_path);
     if (len > 1 && normalized_path[len - 1] == '/') {
-        normalized_path[len - 1] = '\0';
+        normalized_path[len - 1] = '\0'; // Normalize path by removing trailing slash
     }
 
     for (int i = 0; i < inode_count; i++) {
@@ -316,11 +315,6 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
     if (!inode) {
         fprintf(stderr, "write: inode not found for path %s\n", path);
         return -ENOENT;
-    }
-
-    if (offset + size > MAX_BLOCKS_PER_FILE * BLOCK_SIZE) {
-        fprintf(stderr, "write: file size exceeds maximum limit\n");
-        return -EFBIG;
     }
 
     size_t total_written = 0;
