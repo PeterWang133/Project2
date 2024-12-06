@@ -154,7 +154,6 @@ int nufs_rename(const char *from, const char *to) {
         return -ENAMETOOLONG;
     }
 
-    // Update the inode path
     strncpy(inode->path, to, sizeof(inode->path) - 1);
     inode->path[sizeof(inode->path) - 1] = '\0';
 
@@ -285,13 +284,11 @@ int nufs_unlink(const char *path) {
         return -ENOENT;
     }
 
-    // Ensure it's not a directory
     if (node->mode & S_IFDIR) {
         fprintf(stderr, "unlink: cannot unlink directory %s\n", path);
         return -EISDIR;
     }
 
-    // Free associated blocks
     for (int i = 0; i < node->block_count; i++) {
         if (node->blocks[i] >= 0) {
             free_block(node->blocks[i]);
@@ -299,7 +296,7 @@ int nufs_unlink(const char *path) {
     }
 
     // Remove inode
-    int index = node - inodes; // Compute the index of the inode
+    int index = node - inodes; // Compute the inode index
     memmove(&inodes[index], &inodes[index + 1], (inode_count - index - 1) * sizeof(inode_t));
     memset(&inodes[--inode_count], 0, sizeof(inode_t));
 
@@ -307,7 +304,6 @@ int nufs_unlink(const char *path) {
     printf("unlink(%s) -> 0\n", path);
     return 0;
 }
-
 
 static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *inode = inode_lookup(path);
@@ -320,7 +316,6 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         return 0; // Offset beyond EOF
     }
 
-    // Limit size to the remaining file size
     size_t remaining = inode->size - offset;
     if (size > remaining) {
         size = remaining;
@@ -329,24 +324,23 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
     size_t total_read = 0;
 
     while (size > 0) {
-        int block_index = (offset + total_read) / BLOCK_SIZE;   // Block index
+        int block_index = (offset + total_read) / BLOCK_SIZE; // Calculate block index
         size_t block_offset = (offset + total_read) % BLOCK_SIZE; // Offset within block
-        size_t to_read = BLOCK_SIZE - block_offset;             // Max readable from block
-
+        size_t to_read = BLOCK_SIZE - block_offset; // Max bytes to read in current block
         if (to_read > size) {
             to_read = size;
         }
 
         if (block_index >= inode->block_count) {
-            fprintf(stderr, "read: block index %d out of range\n", block_index);
-            return total_read; // Partial read, if applicable
+            fprintf(stderr, "read: block index %d out of range for inode %s\n", block_index, path);
+            break; // No more blocks to read
         }
 
         int block_num = inode->blocks[block_index];
         void *block = blocks_get_block(block_num);
         if (!block) {
             fprintf(stderr, "read: failed to retrieve block %d\n", block_num);
-            return -EIO;
+            return -EIO; // Error retrieving block
         }
 
         memcpy(buf + total_read, (char *)block + block_offset, to_read);
@@ -358,7 +352,6 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
     printf("read(%s, %zu bytes, offset %ld) -> %zu bytes read\n", path, total_read, offset, total_read);
     return total_read;
 }
-
 
 static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     // Lookup the inode for the given path
