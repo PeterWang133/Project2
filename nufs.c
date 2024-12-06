@@ -408,8 +408,6 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
     return total_read;
 }
 
-
-
 // FUSE operations
 void nufs_init_ops(struct fuse_operations *ops) {
     memset(ops, 0, sizeof(struct fuse_operations));
