@@ -23,6 +23,9 @@ typedef struct {
     int blocks[MAX_BLOCKS_PER_FILE];
     int block_count;
     mode_t mode;
+    time_t atime;
+    time_t mtime;
+    time_t ctime;
 } inode_t;
 
 static inode_t inodes[MAX_FILES];
@@ -111,6 +114,8 @@ inode_t *inode_create(const char *path, mode_t mode) {
     node->size = 0;
     node->block_count = 0;
     node->mode = mode;
+    time_t now = time(NULL);
+    node->atime = node->mtime = node->ctime = now;
     save_inodes();
     return node;
 }
@@ -187,9 +192,12 @@ int nufs_getattr(const char *path, struct stat *st) {
     memset(st, 0, sizeof(struct stat));
     st->st_mode = node->mode;
     st->st_size = node->size;
-    st->st_nlink = 1;
+    st->st_nlink = (node->mode & S_IFDIR) ? 2 : 1;
     st->st_uid = getuid();
     st->st_gid = getgid();
+    st->st_atime = node->atime;
+    st->st_mtime = node->mtime;
+    st->st_ctime = node->ctime;
     st->st_blocks = (node->size + BLOCK_SIZE - 1) / BLOCK_SIZE;
     st->st_blksize = BLOCK_SIZE;
 
@@ -386,6 +394,8 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         size -= to_read;
     }
 
+    inode->atime = time(NULL); // Update access time
+    save_inodes();
     printf("read(%s, %zu bytes, offset %ld) -> %zu bytes read\n", path, total_read, offset, total_read);
     return total_read;
 }
