@@ -308,9 +308,9 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         return -ENOENT;
     }
 
-    // Expand file size if necessary
-    if (offset + size > inode->size) {
-        inode->size = offset + size;
+    if (offset + size > MAX_BLOCKS_PER_FILE * BLOCK_SIZE) {
+        fprintf(stderr, "write: file size exceeds maximum limit\n");
+        return -EFBIG;
     }
 
     size_t total_written = 0;
@@ -323,7 +323,7 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
             to_write = size;
         }
 
-        // Allocate a new block if necessary
+        // Allocate new block if necessary
         if (block_index >= inode->block_count) {
             int new_block = inode_add_block(inode);
             if (new_block < 0) {
@@ -345,8 +345,9 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         size -= to_write;
     }
 
+    inode->size = offset + total_written > inode->size ? offset + total_written : inode->size;
+    inode->mtime = time(NULL);
     save_inodes();
-    printf("write(%s, %zu bytes, offset %ld) -> %zu bytes written\n", path, total_written, offset, total_written);
     return total_written;
 }
 
@@ -358,15 +359,14 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
     }
 
     if (offset >= inode->size) {
-        return 0; // Offset beyond EOF
+        return 0; // Reading beyond EOF
     }
 
+    size_t total_read = 0;
     size_t remaining = inode->size - offset;
     if (size > remaining) {
         size = remaining;
     }
-
-    size_t total_read = 0;
 
     while (size > 0) {
         int block_index = (offset + total_read) / BLOCK_SIZE;
@@ -377,7 +377,7 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         }
 
         if (block_index >= inode->block_count || inode->blocks[block_index] < 0) {
-            fprintf(stderr, "read: block index %d out of range or uninitialized\n", block_index);
+            fprintf(stderr, "read: block %d is unallocated\n", block_index);
             break;
         }
 
@@ -394,9 +394,8 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         size -= to_read;
     }
 
-    inode->atime = time(NULL); // Update access time
+    inode->atime = time(NULL);
     save_inodes();
-    printf("read(%s, %zu bytes, offset %ld) -> %zu bytes read\n", path, total_read, offset, total_read);
     return total_read;
 }
 
