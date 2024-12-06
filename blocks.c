@@ -1,3 +1,7 @@
+// This file manages a disk image by providing functions for block allocation, deallocation, and access. 
+// It implements a block-based storage system with a fixed number of blocks and a configurable block size.
+
+// importing neccesary libraries
 #include <string.h>
 #include <assert.h>
 #include <errno.h>
@@ -11,20 +15,31 @@
 #include "bitmap.h"
 #include "blocks.h"
 
+// Neccesary constraints/variables
 const int BLOCK_COUNT = 256; // Number of blocks
 const int BLOCK_SIZE = 4096; // Block size = 4KB
 const int NUFS_SIZE = BLOCK_SIZE * BLOCK_COUNT; // Total size = 1MB
-const int BLOCK_BITMAP_SIZE = BLOCK_COUNT / 8;
+const int BLOCK_BITMAP_SIZE = BLOCK_COUNT / 8; // Size of the block bitmap in bytes
 
 static int blocks_fd = -1;
 void *blocks_base = NULL;
 
-// Get the number of blocks needed for a given number of bytes.
+/** 
+ * Compute the number of blocks needed to store the given number of bytes.
+ *
+ * @param bytes Size of data to store in bytes.
+ *
+ * @return Number of blocks needed to store the given number of bytes.
+ */
 int bytes_to_blocks(int bytes) {
     return (bytes + BLOCK_SIZE - 1) / BLOCK_SIZE;
 }
 
-// Initialize the disk image.
+/**
+ * Load and initialize the given disk image.
+ *
+ * @param image_path Path to the disk image file.
+ */
 void blocks_init(const char *image_path) {
     blocks_fd = open(image_path, O_CREAT | O_RDWR, 0644);
     assert(blocks_fd != -1);
@@ -64,7 +79,13 @@ void blocks_free() {
     }
 }
 
-// Get a pointer to the specified block.
+/**
+ * Get the block with the given index, returning a pointer to its start.
+ *
+ * @param bnum Block number (index).
+ *
+ * @return Pointer to the beginning of the block in memory.
+ */
 void *blocks_get_block(int bnum) {
     if (bnum < 0 || bnum >= BLOCK_COUNT) {
         fprintf(stderr, "blocks_get_block: invalid block number %d\n", bnum);
@@ -73,18 +94,24 @@ void *blocks_get_block(int bnum) {
     return blocks_base + BLOCK_SIZE * bnum;
 }
 
-// Get the block bitmap.
+// @return A pointer to the beginning of the free blocks bitmap.
 void *get_blocks_bitmap() {
     return blocks_get_block(0);
 }
 
-// Get the inode bitmap.
+// @return A pointer to the beginning of the free inode bitmap.
 void *get_inode_bitmap() {
     uint8_t *block = blocks_get_block(0);
     return block + BLOCK_BITMAP_SIZE;
 }
 
-// Allocate a new block
+/**
+ * Allocate a new block and return its number.
+ *
+ * Grabs the first unused block and marks it as allocated.
+ *
+ * @return The index of the newly allocated block.
+ */
 int alloc_block() {
     void *bbm = get_blocks_bitmap();
     // Start from FIRST_DATA_BLOCK to avoid overwriting inode metadata blocks.
@@ -103,7 +130,11 @@ int alloc_block() {
     return -ENOSPC;
 }
 
-// Free a block
+/**
+ * Deallocate the block with the given number.
+ *
+ * @param bnun The block number to deallocate.
+ */
 void free_block(int bnum) {
     if (bnum <= 0 || bnum >= BLOCK_COUNT) {
         fprintf(stderr, "free_block: invalid block number %d\n", bnum);

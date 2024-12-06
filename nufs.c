@@ -1,3 +1,8 @@
+// implements a custom filesystem using FUSE (Filesystem in Userspace), with functionalities for managing inodes, file operations, 
+// and directory operations. It provides mechanisms to initialize storage, save and load inode metadata, create and manipulate files and directories, 
+// and handle file operations like reading, writing, and renaming.
+
+// Importing the necessary libraries
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -15,22 +20,27 @@
 #define FUSE_USE_VERSION 26
 #include <fuse.h>
 
-#define MAX_FILES 128
-#define MAX_BLOCKS_PER_FILE 128
+#define MAX_FILES 128 // Maximum number of inodes/files supported.
+#define MAX_BLOCKS_PER_FILE 128 // Maximum number of data blocks per file.
 
 // Define the metadata layout
-#define INODE_META_BLOCK 1
+#define INODE_META_BLOCK 1 // Stores the number of inodes
+// Range for storing inode data.
 #define FIRST_INODE_BLOCK 2
 #define LAST_INODE_BLOCK 27
-#define FIRST_DATA_BLOCK 28
+
+#define FIRST_DATA_BLOCK 28 // Starting block for file data.
 #define INODES_PER_BLOCK (BLOCK_SIZE / sizeof(inode_t))
 
+//Represents metadata and block mapping for files and directories
+// Inode (inode_t)
 typedef struct {
-    char path[256];
-    int size;
-    int blocks[MAX_BLOCKS_PER_FILE];
-    int block_count;
-    mode_t mode;
+    char path[256]; //The full path to the file or directory.
+    int size; // File size in bytes.
+    int blocks[MAX_BLOCKS_PER_FILE]; // Array mapping to data blocks.
+    int block_count; // Number of blocks allocated to the file.
+    mode_t mode; // Permissions and file type (e.g., directory or regular file).
+    // Timestamps for last access, modification, and metadata change.
     time_t atime;
     time_t mtime;
     time_t ctime;
@@ -57,6 +67,11 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
 static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
 void nufs_init_ops(struct fuse_operations *ops);
 
+/**
+ * Save the inodes to disk.
+ * Initializes the filesystem with a backing disk image
+ * Loads inodes from disk or creates a root directory (/) if missing.
+ */
 void save_inodes() {
     // Write inode_count to meta block
     void *meta_block = blocks_get_block(INODE_META_BLOCK);
@@ -94,6 +109,7 @@ void save_inodes() {
     printf("Saved %d inodes to disk.\n", inode_count);
 }
 
+// Reads inode metadata and array from disk into memory.
 void load_inodes() {
     void *meta_block = blocks_get_block(INODE_META_BLOCK);
     if (!meta_block) {
@@ -126,6 +142,7 @@ void load_inodes() {
     // Trust the stored inode_count
     printf("Loaded %d inodes from disk.\n", inode_count);
 }
+
 
 void storage_init(const char *path) {
     printf("Initializing storage with disk image: %s\n", path);

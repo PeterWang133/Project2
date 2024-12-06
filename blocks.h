@@ -23,7 +23,6 @@ const int BLOCK_BITMAP_SIZE; // default = 256 / 8 = 32
 #define FIRST_DATA_BLOCK 28
 extern void *blocks_base;
 
-
 // Compute how many inodes fit in a single block
 #define INODES_PER_BLOCK (BLOCK_SIZE / sizeof(inode_t))
 

@@ -7,12 +7,21 @@
  * This might be useful for directory listings and for manipulating paths.
  */
 
+// neccesary libraries  
 #include <alloca.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "slist.h"
 
+/**
+ * Creates a new list node
+ *
+ * @param text: String to be stored
+ * @param rest: Existing list to append to
+ * 
+ * @return A new list node
+ */
 slist_t *s_cons(const char *text, slist_t *rest) {
   slist_t *xs = malloc(sizeof(slist_t));
   xs->data = strdup(text);
@@ -20,6 +29,12 @@ slist_t *s_cons(const char *text, slist_t *rest) {
   xs->next = rest;
   return xs;
 }
+
+/**
+ * Deallocates a list node
+ *
+ * @param xs: List node to deallocate
+ */
 
 void s_free(slist_t *xs) {
   if (xs == 0) {
@@ -35,6 +50,14 @@ void s_free(slist_t *xs) {
   }
 }
 
+/**
+ * Splits a string into a linked list using a delimiter
+ *
+ * @param text: String to split
+ * @param delim: Delimiter to split the string
+ * 
+ * @return A linked list of strings
+ */
 slist_t *s_explode(const char *text, char delim) {
   if (*text == 0) {
     return 0;
