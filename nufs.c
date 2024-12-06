@@ -118,18 +118,18 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     filler(buf, "..", NULL, 0);
 
     for (int i = 0; i < inode_count; i++) {
-        if (strlen(inodes[i].path) > 0) {
-            const char *name = strrchr(inodes[i].path, '/');
-            name = (name) ? name + 1 : inodes[i].path;
-            if (strlen(name) > 0) {
-                filler(buf, name, NULL, 0);
-            }
+        if (strncmp(inodes[i].path, path, strlen(path)) == 0 &&
+            strlen(inodes[i].path) > strlen(path)) {
+            const char *name = inodes[i].path + strlen(path);
+            if (name[0] == '/') name++; // Skip the '/'
+            filler(buf, name, NULL, 0);
         }
     }
 
     printf("readdir(%s)\n", path);
     return 0;
 }
+
 
 
 
@@ -171,7 +171,7 @@ int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
     inode_t *node = inode_lookup(path);
     if (!node) return -ENOENT;
 
-    if (offset >= node->size) return 0; // No more data to read
+    if (offset >= node->size) return 0; // Nothing more to read
 
     size_t bytes_read = 0;
     while (size > 0 && offset < node->size) {
@@ -193,6 +193,7 @@ int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
     printf("read(%s, %ld bytes, @+%lld) -> %ld\n", path, size, (long long)offset, bytes_read);
     return bytes_read;
 }
+
 
 
 
@@ -218,12 +219,14 @@ int nufs_write(const char *path, const char *buf, size_t size, off_t offset, str
         offset += to_write;
     }
 
+    // Ensure file size reflects the maximum offset reached
     if (offset > node->size) node->size = offset;
     save_inodes();
 
     printf("write(%s, %ld bytes, @+%lld) -> %ld\n", path, size, (long long)offset, bytes_written);
     return bytes_written;
 }
+
 
 // FUSE operations
 void nufs_init_ops(struct fuse_operations *ops) {
