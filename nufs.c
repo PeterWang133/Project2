@@ -111,10 +111,9 @@ void load_inodes() {
         block_num++;
     }
 
-    // Confirm all loaded correctly
+    // No recalculation of inode_count here; trust the stored value
     printf("Loaded %d inodes from disk.\n", inode_count);
 }
-
 
 
 // Initialize storage
