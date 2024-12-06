@@ -403,7 +403,9 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
 
     // Save inode metadata after writing
     save_inodes();
-    printf("write(%s, %zu bytes, offset %ld) -> %zu bytes written\n", path, total_written, offset);
+    printf("write(%s, %zu bytes, offset %ld) -> %zu bytes written\n",
+       path, (size_t)total_written, offset, (size_t)total_written);
+
     return total_written;
 }
 
