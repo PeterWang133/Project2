@@ -78,19 +78,20 @@ void *get_inode_bitmap() {
 // Allocate a new block
 int alloc_block() {
     void *bbm = get_blocks_bitmap();
-    for (int i = 1; i < BLOCK_COUNT; ++i) { // Start from 1, reserve 0 for metadata
-        if (!bitmap_get(bbm, i)) {         // Find the first free block
-            bitmap_put(bbm, i, 1);         // Mark block as allocated
+    // Start from FIRST_DATA_BLOCK to avoid overwriting inode metadata blocks.
+    for (int i = FIRST_DATA_BLOCK; i < BLOCK_COUNT; ++i) {
+        if (!bitmap_get(bbm, i)) {
+            bitmap_put(bbm, i, 1);
             void *block = blocks_get_block(i);
             if (block) {
-                memset(block, 0, BLOCK_SIZE); // Initialize block to zero
+                memset(block, 0, BLOCK_SIZE);
             }
             printf("+ alloc_block() -> %d\n", i);
             return i;
         }
     }
     fprintf(stderr, "alloc_block: no free blocks available\n");
-    return -ENOSPC; // No space left
+    return -ENOSPC;
 }
 
 // Free a block

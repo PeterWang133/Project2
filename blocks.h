@@ -17,6 +17,14 @@ const int NUFS_SIZE;   // default = 1MB
 
 const int BLOCK_BITMAP_SIZE; // default = 256 / 8 = 32
 
+#define INODE_META_BLOCK 1
+#define FIRST_INODE_BLOCK 2
+#define LAST_INODE_BLOCK 27
+#define FIRST_DATA_BLOCK 28
+
+// Compute how many inodes fit in a single block
+#define INODES_PER_BLOCK (BLOCK_SIZE / sizeof(inode_t))
+
 /** 
  * Compute the number of blocks needed to store the given number of bytes.
  *

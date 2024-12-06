@@ -50,31 +50,71 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
 void nufs_init_ops(struct fuse_operations *ops);
 
 void save_inodes() {
-    void *block = blocks_get_block(1); // Block 1 reserved for metadata
-    if (!block) {
-        fprintf(stderr, "save_inodes: Failed to access Block 1 for saving inodes.\n");
+    // Write inode_count to block INODE_META_BLOCK
+    void *meta_block = blocks_get_block(INODE_META_BLOCK);
+    if (!meta_block) {
+        fprintf(stderr, "save_inodes: Failed to access block %d\n", INODE_META_BLOCK);
         return;
     }
-    memcpy(block, inodes, sizeof(inodes));
-    printf("Saved inodes to disk.\n");
+    memcpy(meta_block, &inode_count, sizeof(inode_count));
+
+    // Now write inodes across blocks 2..27
+    int total = inode_count;
+    int written = 0;
+    int block_num = FIRST_INODE_BLOCK;
+    while (written < total && block_num <= LAST_INODE_BLOCK) {
+        int count = total - written;
+        if (count > INODES_PER_BLOCK) {
+            count = INODES_PER_BLOCK;
+        }
+
+        void *b = blocks_get_block(block_num);
+        if (!b) {
+            fprintf(stderr, "save_inodes: Failed to access inode block %d\n", block_num);
+            return;
+        }
+
+        memcpy(b, &inodes[written], count * sizeof(inode_t));
+        written += count;
+        block_num++;
+    }
+
+    printf("Saved %d inodes to disk.\n", inode_count);
 }
 
 void load_inodes() {
-    void *block = blocks_get_block(1); // Block 1 reserved for metadata
-    if (!block) {
-        fprintf(stderr, "load_inodes: Failed to access Block 1 for loading inodes.\n");
+    void *meta_block = blocks_get_block(INODE_META_BLOCK);
+    if (!meta_block) {
+        fprintf(stderr, "load_inodes: Failed to access block %d\n", INODE_META_BLOCK);
         return;
     }
-    memcpy(inodes, block, sizeof(inodes));
-    inode_count = 0;
 
-    for (int i = 0; i < MAX_FILES; i++) {
-        if (strlen(inodes[i].path) > 0) { // Valid path indicates a valid inode
-            inode_count++;
+    memcpy(&inode_count, meta_block, sizeof(inode_count));
+    memset(inodes, 0, sizeof(inodes));
+
+    int read_count = 0;
+    int block_num = FIRST_INODE_BLOCK;
+    while (read_count < inode_count && block_num <= LAST_INODE_BLOCK) {
+        int count = inode_count - read_count;
+        if (count > INODES_PER_BLOCK) {
+            count = INODES_PER_BLOCK;
         }
+
+        void *b = blocks_get_block(block_num);
+        if (!b) {
+            fprintf(stderr, "load_inodes: Failed to access inode block %d\n", block_num);
+            return;
+        }
+
+        memcpy(&inodes[read_count], b, count * sizeof(inode_t));
+        read_count += count;
+        block_num++;
     }
-    printf("Loaded inodes from disk.\n");
+
+    // Confirm all loaded correctly
+    printf("Loaded %d inodes from disk.\n", inode_count);
 }
+
 
 
 // Initialize storage
