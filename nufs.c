@@ -39,7 +39,7 @@ typedef struct {
 
 inode_t inode_table[MAX_FILES];
 
-// Initialize inode table
+// Helper Functions
 void init_inode_table() {
     for (int i = 0; i < MAX_FILES; i++) {
         memset(&inode_table[i], 0, sizeof(inode_t));
@@ -54,7 +54,6 @@ void init_inode_table() {
     inode_table[0].ctime = inode_table[0].mtime = inode_table[0].atime = time(NULL);
 }
 
-// Locate an inode
 int find_inode(const char *path, int parent_index) {
     for (int i = 0; i < MAX_FILES; i++) {
         if (strcmp(inode_table[i].name, path) == 0 && inode_table[i].parent_index == parent_index) {
@@ -64,7 +63,6 @@ int find_inode(const char *path, int parent_index) {
     return -1;
 }
 
-// Create an inode
 int create_inode(const char *name, mode_t mode, int is_dir, int parent_index) {
     for (int i = 0; i < MAX_FILES; i++) {
         if (inode_table[i].name[0] == '\0') {
@@ -88,7 +86,19 @@ int create_inode(const char *name, mode_t mode, int is_dir, int parent_index) {
     return -ENOSPC;
 }
 
-// nufs_access: Check file accessibility
+void split_path(const char *path, char *parent, char *name) {
+    const char *last_slash = strrchr(path, '/');
+    if (last_slash == path) {
+        strcpy(parent, "/");
+        strcpy(name, path + 1);
+    } else {
+        strncpy(parent, path, last_slash - path);
+        parent[last_slash - path] = '\0';
+        strcpy(name, last_slash + 1);
+    }
+}
+
+// FUSE Callbacks
 int nufs_access(const char *path, int mask) {
     int idx = find_inode(path, 0);
     int rv = (idx >= 0) ? 0 : -ENOENT;
@@ -96,7 +106,6 @@ int nufs_access(const char *path, int mask) {
     return rv;
 }
 
-// nufs_getattr: Retrieve file attributes
 int nufs_getattr(const char *path, struct stat *st) {
     int idx = find_inode(path, 0);
     if (idx == -1) return -ENOENT;
@@ -111,7 +120,6 @@ int nufs_getattr(const char *path, struct stat *st) {
     return 0;
 }
 
-// nufs_readdir: List directory contents
 int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
     int idx = find_inode(path, 0);
     if (idx == -1 || !inode_table[idx].is_dir) return -ENOENT;
@@ -127,7 +135,6 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     return 0;
 }
 
-// nufs_mknod: Create a file
 int nufs_mknod(const char *path, mode_t mode, dev_t dev) {
     char parent[MAX_PATH_LEN], name[DIR_NAME_LENGTH];
     split_path(path, parent, name);
@@ -142,7 +149,18 @@ int nufs_mknod(const char *path, mode_t mode, dev_t dev) {
     return new_idx >= 0 ? 0 : new_idx;
 }
 
-// nufs_write: Write to a file
+int nufs_mkdir(const char *path, mode_t mode) {
+    char parent[MAX_PATH_LEN], name[DIR_NAME_LENGTH];
+    split_path(path, parent, name);
+
+    int parent_idx = find_inode(parent, 0);
+    if (parent_idx == -1) return -ENOENT;
+
+    inode_t *parent_inode = &inode_table[parent_idx];
+    int new_idx = create_inode(name, mode | S_IFDIR, 1, parent_idx);
+    return new_idx >= 0 ? 0 : new_idx;
+}
+
 int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     int idx = find_inode(path, 0);
     if (idx == -1) return -ENOENT;
@@ -173,17 +191,44 @@ int nufs_write(const char *path, const char *buf, size_t size, off_t offset, str
     return written;
 }
 
-// Initialize FUSE operations
+int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    int idx = find_inode(path, 0);
+    if (idx == -1) return -ENOENT;
+
+    inode_t *inode = &inode_table[idx];
+    if (offset >= inode->size) return 0;
+
+    size_t to_read = size;
+    if (offset + size > inode->size) to_read = inode->size - offset;
+
+    size_t read = 0;
+    while (to_read > 0) {
+        int block_idx = (offset + read) / BLOCK_SIZE;
+        if (block_idx >= MAX_BLOCKS || inode->block_indices[block_idx] == -1) break;
+
+        void *block = blocks_get_block(inode->block_indices[block_idx]);
+        size_t block_offset = (offset + read) % BLOCK_SIZE;
+        size_t to_copy = BLOCK_SIZE - block_offset;
+        if (to_copy > to_read) to_copy = to_read;
+
+        memcpy(buf + read, block + block_offset, to_copy);
+        read += to_copy;
+        to_read -= to_copy;
+    }
+    return read;
+}
+
 void nufs_init_ops(struct fuse_operations *ops) {
     memset(ops, 0, sizeof(struct fuse_operations));
     ops->access = nufs_access;
     ops->getattr = nufs_getattr;
     ops->readdir = nufs_readdir;
     ops->mknod = nufs_mknod;
+    ops->mkdir = nufs_mkdir;
     ops->write = nufs_write;
+    ops->read = nufs_read;
 }
 
-// Main
 int main(int argc, char *argv[]) {
     blocks_init(argv[--argc]);
     init_inode_table();
