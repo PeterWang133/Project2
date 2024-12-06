@@ -17,7 +17,7 @@ const int NUFS_SIZE = BLOCK_SIZE * BLOCK_COUNT; // Total size = 1MB
 const int BLOCK_BITMAP_SIZE = BLOCK_COUNT / 8;
 
 static int blocks_fd = -1;
-static void *blocks_base = NULL;
+void *blocks_base = NULL;
 
 // Get the number of blocks needed for a given number of bytes.
 int bytes_to_blocks(int bytes) {
