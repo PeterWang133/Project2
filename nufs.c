@@ -162,13 +162,20 @@ int nufs_rename(const char *from, const char *to) {
         return -EEXIST;
     }
 
+    // Check path length
     if (strlen(to) >= sizeof(inode->path)) {
         fprintf(stderr, "rename: destination path %s is too long\n", to);
         return -ENAMETOOLONG;
     }
 
+    // Update the path in the inode
     strncpy(inode->path, to, sizeof(inode->path) - 1);
     inode->path[sizeof(inode->path) - 1] = '\0';
+
+    // Update modification and change times
+    time_t now = time(NULL);
+    inode->mtime = now;
+    inode->ctime = now;
 
     save_inodes();
     printf("rename(%s -> %s) successful\n", from, to);
@@ -221,13 +228,24 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
 
-    if (strcmp(path, "/") == 0) {
-        for (int i = 0; i < inode_count; i++) {
-            if ((inodes[i].mode & S_IFDIR) || (inodes[i].mode & S_IFREG)) {
-                const char *name = inodes[i].path + 1; // Skip leading "/"
-                if (strlen(name) > 0 && strchr(name, '/') == NULL) {
-                    filler(buf, name, NULL, 0);
-                }
+    for (int i = 0; i < inode_count; i++) {
+        // If path is "/", show top-level files and directories
+        if (strcmp(path, "/") == 0) {
+            const char *name = inodes[i].path + 1; // Skip leading "/"
+            if (strlen(name) > 0 && strchr(name, '/') == NULL) {
+                filler(buf, name, NULL, 0);
+            }
+        } 
+        // For nested paths, show contents of that specific directory
+        else {
+            size_t path_len = strlen(path);
+            if (strncmp(inodes[i].path, path, path_len) == 0 && 
+                strlen(inodes[i].path) > path_len && 
+                inodes[i].path[path_len] == '/' &&
+                strchr(inodes[i].path + path_len + 1, '/') == NULL) {
+                
+                const char *name = inodes[i].path + path_len + 1;
+                filler(buf, name, NULL, 0);
             }
         }
     }
@@ -296,15 +314,18 @@ int nufs_unlink(const char *path) {
         return -EISDIR;
     }
 
+    // Free all blocks associated with the file
     for (int i = 0; i < inode->block_count; i++) {
         if (inode->blocks[i] >= 0) {
             free_block(inode->blocks[i]);
         }
     }
 
+    // Find and remove the inode
     int index = inode - inodes; // Compute the inode index
     memmove(&inodes[index], &inodes[index + 1], (inode_count - index - 1) * sizeof(inode_t));
-    memset(&inodes[--inode_count], 0, sizeof(inode_t));
+    memset(&inodes[inode_count - 1], 0, sizeof(inode_t));
+    inode_count--;
 
     save_inodes();
     printf("unlink(%s) -> 0\n", path);
@@ -318,17 +339,24 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         return -ENOENT;
     }
 
+    // Ensure the file is a regular file
+    if (!(inode->mode & S_IFREG)) {
+        fprintf(stderr, "write: cannot write to non-regular file %s\n", path);
+        return -EISDIR;
+    }
+
     size_t total_written = 0;
 
-    while (size > 0) {
+    while (total_written < size) {
         int block_index = (offset + total_written) / BLOCK_SIZE;
         size_t block_offset = (offset + total_written) % BLOCK_SIZE;
         size_t to_write = BLOCK_SIZE - block_offset;
 
-        if (to_write > size) {
-            to_write = size;
+        if (to_write > size - total_written) {
+            to_write = size - total_written;
         }
 
+        // Allocate a new block if needed
         if (block_index >= inode->block_count) {
             int new_block = inode_add_block(inode);
             if (new_block < 0) {
@@ -346,11 +374,18 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
 
         memcpy((char *)block + block_offset, buf + total_written, to_write);
         total_written += to_write;
-        size -= to_write;
     }
 
-    inode->size = (offset + total_written > inode->size) ? offset + total_written : inode->size;
-    inode->mtime = time(NULL);
+    // Update file size if we've written beyond current size
+    if (offset + total_written > inode->size) {
+        inode->size = offset + total_written;
+    }
+
+    // Update timestamps
+    time_t now = time(NULL);
+    inode->mtime = now;
+    inode->ctime = now;
+
     save_inodes();
     return total_written;
 }
@@ -362,28 +397,36 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         return -ENOENT;
     }
 
-    if (offset >= inode->size) {
-        return 0; // EOF reached
+    // Ensure the file is a regular file
+    if (!(inode->mode & S_IFREG)) {
+        fprintf(stderr, "read: cannot read from non-regular file %s\n", path);
+        return -EISDIR;
     }
 
+    // Check if we're past the end of the file
+    if (offset >= inode->size) {
+        return 0;
+    }
+
+    // Adjust read size if it would go beyond file size
     size_t remaining = inode->size - offset;
     if (size > remaining) {
         size = remaining;
     }
 
     size_t total_read = 0;
-    while (size > 0) {
+
+    while (total_read < size) {
         int block_index = (offset + total_read) / BLOCK_SIZE;
         size_t block_offset = (offset + total_read) % BLOCK_SIZE;
         size_t to_read = BLOCK_SIZE - block_offset;
 
-        if (to_read > size) {
-            to_read = size;
+        if (to_read > size - total_read) {
+            to_read = size - total_read;
         }
 
-        if (block_index >= inode->block_count || inode->blocks[block_index] < 0) {
-            fprintf(stderr, "read: invalid block %d for path '%s'\n", block_index, path);
-            break; // Stop reading on encountering an unallocated block
+        if (block_index >= inode->block_count) {
+            break; // No more blocks to read
         }
 
         int block_num = inode->blocks[block_index];
@@ -395,11 +438,12 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
 
         memcpy(buf + total_read, (char *)block + block_offset, to_read);
         total_read += to_read;
-        size -= to_read;
     }
 
+    // Update access time
     inode->atime = time(NULL);
     save_inodes();
+
     return total_read;
 }
 
