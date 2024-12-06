@@ -117,11 +117,10 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     filler(buf, "..", NULL, 0);
 
     for (int i = 0; i < inode_count; i++) {
-        if (strncmp(inodes[i].path, path, strlen(path)) == 0 &&
-            strlen(inodes[i].path) > strlen(path)) {
+        if (strcmp(path, "/") == 0 || strncmp(inodes[i].path, path, strlen(path)) == 0) {
             const char *name = inodes[i].path + strlen(path);
-            if (name[0] == '/') name++; // Skip the '/'
-            if (strlen(name) > 0) {
+            if (name[0] == '/') name++; // Skip leading '/'
+            if (strlen(name) > 0 && strchr(name, '/') == NULL) {
                 filler(buf, name, NULL, 0);
             }
         }
@@ -131,23 +130,30 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     return 0;
 }
 
-int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
+
+static int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
+    printf("mknod(%s, %o)\n", path, mode);
     if (inode_lookup(path)) return -EEXIST;
 
-    inode_t *node = inode_create(path, mode | S_IFREG);
-    int rv = (node != NULL) ? 0 : -ENOMEM;
-    printf("mknod(%s, %04o) -> %d\n", path, mode, rv);
-    return rv;
+    inode_t *node = inode_create(path, mode);
+    if (!node) return -ENOSPC;
+
+    save_inodes();
+    return 0;
 }
 
+
 int nufs_mkdir(const char *path, mode_t mode) {
+    printf("mkdir(%s, %o)\n", path, mode);
     if (inode_lookup(path)) return -EEXIST;
 
     inode_t *node = inode_create(path, mode | S_IFDIR);
-    int rv = (node != NULL) ? 0 : -ENOMEM;
-    printf("mkdir(%s) -> %d\n", path, rv);
-    return rv;
+    if (!node) return -ENOMEM;
+
+    save_inodes();
+    return 0;
 }
+
 
 
 int nufs_unlink(const char *path) {
@@ -157,7 +163,7 @@ int nufs_unlink(const char *path) {
     for (int i = 0; i < node->block_count; i++) {
         free_block(node->blocks[i]);
     }
-    memmove(node, node + 1, (inode_count - (node - inodes) - 1) * sizeof(inode_t));
+    memset(node, 0, sizeof(inode_t)); // Clear inode data
     inode_count--;
     save_inodes();
     printf("unlink(%s) -> 0\n", path);
@@ -165,60 +171,68 @@ int nufs_unlink(const char *path) {
 }
 
 
-int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    inode_t *node = inode_lookup(path);
-    if (!node) return -ENOENT;
 
-    if (offset >= node->size) return 0; // Nothing to read
+static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    inode_t *inode = inode_lookup(path);
+    if (!inode) return -ENOENT;
 
-    size_t bytes_read = 0;
-    while (size > 0 && offset < node->size) {
-        int block_idx = offset / BLOCK_SIZE;
-        if (block_idx >= node->block_count) break;
+    if (offset >= inode->size) return 0;
 
-        void *block = blocks_get_block(node->blocks[block_idx]);
-        size_t block_offset = offset % BLOCK_SIZE;
+    size_t remaining = inode->size - offset;
+    if (size > remaining) size = remaining;
+
+    size_t total_read = 0;
+    while (size > 0) {
+        int block_index = (offset + total_read) / BLOCK_SIZE;
+        size_t block_offset = (offset + total_read) % BLOCK_SIZE;
         size_t to_read = BLOCK_SIZE - block_offset;
         if (to_read > size) to_read = size;
-        if (to_read > node->size - offset) to_read = node->size - offset;
 
-        memcpy(buf + bytes_read, block + block_offset, to_read);
-        bytes_read += to_read;
+        int block_num = inode->blocks[block_index];
+        void *block = blocks_get_block(block_num);
+        memcpy(buf + total_read, block + block_offset, to_read);
+
+        total_read += to_read;
         size -= to_read;
-        offset += to_read;
     }
 
-    printf("read(%s, %ld bytes, @+%lld) -> %ld\n", path, size, (long long)offset, bytes_read);
-    return bytes_read;
+    printf("read(%s, %zu bytes, offset %ld)\n", path, total_read, offset);
+    return total_read;
 }
 
-int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    inode_t *node = inode_lookup(path);
-    if (!node) return -ENOENT;
 
-    size_t bytes_written = 0;
+
+static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    inode_t *inode = inode_lookup(path);
+    if (!inode) return -ENOENT;
+
+    if (offset + size > inode->size) {
+        inode->size = offset + size;
+    }
+
+    size_t total_written = 0;
     while (size > 0) {
-        int block_idx = offset / BLOCK_SIZE;
-        if (block_idx >= node->block_count) {
-            if (inode_add_block(node) == -1) break;
-        }
-
-        void *block = blocks_get_block(node->blocks[block_idx]);
-        size_t block_offset = offset % BLOCK_SIZE;
+        int block_index = (offset + total_written) / BLOCK_SIZE;
+        size_t block_offset = (offset + total_written) % BLOCK_SIZE;
         size_t to_write = BLOCK_SIZE - block_offset;
         if (to_write > size) to_write = size;
 
-        memcpy(block + block_offset, buf + bytes_written, to_write);
-        bytes_written += to_write;
+        if (block_index >= inode->block_count) {
+            int block_num = inode_add_block(inode);
+            if (block_num < 0) return -ENOSPC;
+        }
+
+        int block_num = inode->blocks[block_index];
+        void *block = blocks_get_block(block_num);
+        memcpy(block + block_offset, buf + total_written, to_write);
+
+        total_written += to_write;
         size -= to_write;
-        offset += to_write;
     }
 
-    if (offset > node->size) node->size = offset; // Update file size
     save_inodes();
-
-    printf("write(%s, %ld bytes, @+%lld) -> %ld\n", path, size, (long long)offset, bytes_written);
-    return bytes_written;
+    printf("write(%s, %zu bytes, offset %ld)\n", path, total_written, offset);
+    return total_written;
 }
 
 
