@@ -181,31 +181,24 @@ int nufs_access(const char *path, int mask) {
 
 
 int nufs_getattr(const char *path, struct stat *st) {
-    // Lookup the inode for the specified path
     inode_t *node = inode_lookup(path);
     if (!node) {
-        printf("getattr: inode not found for path %s\n", path);
-        return -ENOENT; // Return "No such file or directory" if not found
+        fprintf(stderr, "getattr: inode not found for path %s\n", path);
+        return -ENOENT;
     }
 
-    // Clear the stat structure
     memset(st, 0, sizeof(struct stat));
+    st->st_mode = node->mode; 
+    st->st_size = node->size; 
+    st->st_nlink = 1;
+    st->st_uid = getuid(); 
+    st->st_gid = getgid(); 
+    st->st_blocks = (node->size + BLOCK_SIZE - 1) / BLOCK_SIZE;
+    st->st_blksize = BLOCK_SIZE;
 
-    // Fill the stat structure with inode metadata
-    st->st_mode = node->mode;          // File type and permissions
-    st->st_size = node->size;          // File size in bytes
-    st->st_nlink = 1;                  // Number of hard links (default to 1)
-    st->st_uid = getuid();             // Owner ID (current user)
-    st->st_gid = getgid();             // Group ID (current group)
-    st->st_blocks = (node->size + BLOCK_SIZE - 1) / BLOCK_SIZE; // Number of 512B blocks allocated
-    st->st_blksize = BLOCK_SIZE;       // Preferred block size for I/O operations
-
-    // Log the operation
-    printf("getattr(%s) -> {mode: %04o, size: %lld, blocks: %lld}\n",
-           path, st->st_mode, (long long)st->st_size, (long long)st->st_blocks);
+    printf("getattr(%s) -> mode: %o, size: %d, blocks: %ld\n", path, node->mode, node->size, st->st_blocks);
     return 0;
 }
-
 
 int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
     printf("readdir(%s)\n", path);
@@ -216,11 +209,12 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     if (strcmp(path, "/") == 0) {
         for (int i = 0; i < inode_count; i++) {
             if (inodes[i].mode & S_IFDIR || inodes[i].mode & S_IFREG) {
-                const char *name = inodes[i].path + 1; // Skip leading "/"
+                const char *name = inodes[i].path + 1; 
                 if (strlen(name) > 0 && strchr(name, '/') == NULL) {
                     filler(buf, name, NULL, 0);
                 }
             }
+
         }
     }
 
@@ -231,20 +225,22 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
 static int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
     printf("mknod(%s, %o)\n", path, mode);
 
-    // Check if the file already exists
-    if (inode_lookup(path)) {
-        printf("mknod: file %s already exists\n", path);
-        return -EEXIST;
+    if (inode_count >= MAX_FILES) {
+        fprintf(stderr, "mknod: max file count reached\n");
+        return -ENOSPC;
     }
 
-    // Create a new inode for the file
-    inode_t *node = inode_create(path, mode);
+    if (strlen(path) >= sizeof(inodes[0].path)) {
+        fprintf(stderr, "mknod: path too long\n");
+        return -ENAMETOOLONG;
+    }
+
+    inode_t *node = inode_create(path, mode ? mode : (S_IFREG | 0644));
     if (!node) {
-        printf("mknod: failed to create inode for %s\n", path);
-        return -ENOSPC; // No space left
+        fprintf(stderr, "mknod: failed to create inode for %s\n", path);
+        return -ENOSPC;
     }
 
-    // Save changes to disk
     save_inodes();
     printf("mknod: successfully created file %s\n", path);
     return 0;
