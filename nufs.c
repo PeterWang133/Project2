@@ -352,52 +352,62 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
 }
 
 static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+    // Locate the inode for the given path
     inode_t *inode = inode_lookup(path);
     if (!inode) {
-        fprintf(stderr, "read: inode not found for path %s\n", path);
+        fprintf(stderr, "read: inode not found for path '%s'\n", path);
         return -ENOENT;
     }
 
+    // Handle reading beyond EOF
     if (offset >= inode->size) {
-        return 0; // Reading beyond EOF
+        return 0; // EOF reached
     }
 
-    size_t total_read = 0;
+    // Adjust the read size if it exceeds file size
     size_t remaining = inode->size - offset;
     if (size > remaining) {
         size = remaining;
     }
 
+    size_t total_read = 0;
+
+    // Read data block by block
     while (size > 0) {
         int block_index = (offset + total_read) / BLOCK_SIZE;
         size_t block_offset = (offset + total_read) % BLOCK_SIZE;
         size_t to_read = BLOCK_SIZE - block_offset;
+
         if (to_read > size) {
             to_read = size;
         }
 
         if (block_index >= inode->block_count || inode->blocks[block_index] < 0) {
-            fprintf(stderr, "read: block %d is unallocated\n", block_index);
-            break;
+            fprintf(stderr, "read: invalid block %d for path '%s'\n", block_index, path);
+            break; // Stop reading on encountering an unallocated block
         }
 
         int block_num = inode->blocks[block_index];
         void *block = blocks_get_block(block_num);
         if (!block) {
-            fprintf(stderr, "read: failed to retrieve block %d\n", block_num);
-            return -EIO;
+            fprintf(stderr, "read: failed to retrieve block %d for path '%s'\n", block_num, path);
+            return -EIO; // Input/output error
         }
 
+        // Copy data from the block to the buffer
         memcpy(buf + total_read, (char *)block + block_offset, to_read);
 
         total_read += to_read;
         size -= to_read;
     }
 
+    // Update the inode's access time
     inode->atime = time(NULL);
     save_inodes();
+
     return total_read;
 }
+
 
 // FUSE operations
 void nufs_init_ops(struct fuse_operations *ops) {
