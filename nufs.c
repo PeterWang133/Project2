@@ -84,9 +84,9 @@ void storage_init(const char *path) {
 
     // Ensure root directory exists
     if (!inode_lookup("/")) {
-        printf("Root directory not found. Initializing root directory.\n");
         inode_create("/", S_IFDIR | 0755);
     }
+
 
     printf("Storage initialized successfully.\n");
 }
@@ -95,7 +95,7 @@ void storage_init(const char *path) {
 // Find an inode by path
 inode_t *inode_lookup(const char *path) {
     for (int i = 0; i < inode_count; i++) {
-        if (strcmp(inodes[i].path, path) == 0) {
+        if (strcmp(inodes[i].path, path) == 0 || strcmp(inodes[i].path, path + 1) == 0) {
             return &inodes[i];
         }
     }
