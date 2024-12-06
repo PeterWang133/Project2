@@ -94,8 +94,18 @@ void storage_init(const char *path) {
 
 // Find an inode by path
 inode_t *inode_lookup(const char *path) {
+    char normalized_path[256];
+    strncpy(normalized_path, path, sizeof(normalized_path) - 1);
+    normalized_path[sizeof(normalized_path) - 1] = '\0';
+
+    // Remove trailing slash (except for the root path)
+    size_t len = strlen(normalized_path);
+    if (len > 1 && normalized_path[len - 1] == '/') {
+        normalized_path[len - 1] = '\0';
+    }
+
     for (int i = 0; i < inode_count; i++) {
-        if (strcmp(inodes[i].path, path) == 0) {
+        if (strcmp(inodes[i].path, normalized_path) == 0) {
             return &inodes[i];
         }
     }
@@ -319,11 +329,11 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         int block_index = (offset + total_written) / BLOCK_SIZE;
         size_t block_offset = (offset + total_written) % BLOCK_SIZE;
         size_t to_write = BLOCK_SIZE - block_offset;
+
         if (to_write > size) {
             to_write = size;
         }
 
-        // Allocate new block if necessary
         if (block_index >= inode->block_count) {
             int new_block = inode_add_block(inode);
             if (new_block < 0) {
@@ -340,39 +350,33 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         }
 
         memcpy((char *)block + block_offset, buf + total_written, to_write);
-
         total_written += to_write;
         size -= to_write;
     }
 
-    inode->size = offset + total_written > inode->size ? offset + total_written : inode->size;
+    inode->size = (offset + total_written > inode->size) ? offset + total_written : inode->size;
     inode->mtime = time(NULL);
     save_inodes();
     return total_written;
 }
 
 static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
-    // Locate the inode for the given path
     inode_t *inode = inode_lookup(path);
     if (!inode) {
         fprintf(stderr, "read: inode not found for path '%s'\n", path);
         return -ENOENT;
     }
 
-    // Handle reading beyond EOF
     if (offset >= inode->size) {
         return 0; // EOF reached
     }
 
-    // Adjust the read size if it exceeds file size
     size_t remaining = inode->size - offset;
     if (size > remaining) {
         size = remaining;
     }
 
     size_t total_read = 0;
-
-    // Read data block by block
     while (size > 0) {
         int block_index = (offset + total_read) / BLOCK_SIZE;
         size_t block_offset = (offset + total_read) % BLOCK_SIZE;
@@ -391,22 +395,19 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         void *block = blocks_get_block(block_num);
         if (!block) {
             fprintf(stderr, "read: failed to retrieve block %d for path '%s'\n", block_num, path);
-            return -EIO; // Input/output error
+            return -EIO;
         }
 
-        // Copy data from the block to the buffer
         memcpy(buf + total_read, (char *)block + block_offset, to_read);
-
         total_read += to_read;
         size -= to_read;
     }
 
-    // Update the inode's access time
     inode->atime = time(NULL);
     save_inodes();
-
     return total_read;
 }
+
 
 
 // FUSE operations
