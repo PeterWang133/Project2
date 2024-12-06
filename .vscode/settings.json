@@ -1,5 +1,7 @@
 {
     "files.associations": {
-        "blocks.h": "c"
+        "blocks.h": "c",
+        "bitmap.h": "c",
+        "types.h": "c"
     }
 }

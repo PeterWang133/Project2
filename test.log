@@ -1,8 +1,0 @@
-mkdir -p mnt || true
-./nufs -s -f mnt data.nufs
-fusermount -u mnt || true
-/bin/sh: fusermount: command not found
-mount_macfuse: the file system is not available (1)
-Mounting filesystem with disk image: data.nufs
-Loaded inodes from disk.
-make[1]: *** [mount] Error 1
