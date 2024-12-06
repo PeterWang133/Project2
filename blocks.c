@@ -29,17 +29,26 @@ void blocks_init(const char *image_path) {
     blocks_fd = open(image_path, O_CREAT | O_RDWR, 0644);
     assert(blocks_fd != -1);
 
-    // Ensure the disk image is exactly 1MB.
-    int rv = ftruncate(blocks_fd, NUFS_SIZE);
+    // Check current file size
+    struct stat st;
+    int rv = fstat(blocks_fd, &st);
     assert(rv == 0);
 
-    // Map the image to memory.
+    if (st.st_size != NUFS_SIZE) {
+        rv = ftruncate(blocks_fd, NUFS_SIZE);
+        assert(rv == 0);
+    }
+
     blocks_base = mmap(0, NUFS_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, blocks_fd, 0);
     assert(blocks_base != MAP_FAILED);
 
-    // Reserve block 0 for the block and inode bitmaps.
-    void *bbm = get_blocks_bitmap();
-    bitmap_put(bbm, 0, 1);
+    // Reserve block 0 for the block and inode bitmaps only if this is a fresh image
+    // If file was newly created or truncated, we need to set bitmap for block 0
+    // If it already existed and was correct size, assume metadata is intact
+    if (st.st_size == 0) {
+        void *bbm = get_blocks_bitmap();
+        bitmap_put(bbm, 0, 1);
+    }
 }
 
 // Free the disk image and unmap memory.
