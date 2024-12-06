@@ -127,6 +127,7 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     return 0;
 }
 
+
 int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
     if (inode_lookup(path)) return -EEXIST;
 
@@ -159,6 +160,7 @@ int nufs_unlink(const char *path) {
     return 0;
 }
 
+
 int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *node = inode_lookup(path);
     if (!node) return -ENOENT;
@@ -183,6 +185,7 @@ int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
     printf("read(%s, %ld bytes, @+%lld) -> %ld\n", path, size, (long long)offset, bytes_read);
     return bytes_read;
 }
+
 
 int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *node = inode_lookup(path);
@@ -233,5 +236,8 @@ int main(int argc, char *argv[]) {
 
     struct fuse_operations nufs_ops;
     nufs_init_ops(&nufs_ops);
-    return fuse_main(argc - 1, argv, &nufs_ops, NULL);
+    int ret = fuse_main(argc - 1, argv, &nufs_ops, NULL);
+    blocks_free();
+    return ret;
 }
+
