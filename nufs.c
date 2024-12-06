@@ -275,31 +275,19 @@ int nufs_mkdir(const char *path, mode_t mode) {
 
 int nufs_unlink(const char *path) {
     inode_t *node = inode_lookup(path);
-    if (!node) {
-        fprintf(stderr, "unlink: file %s not found\n", path);
+    if (!node || (node->mode & S_IFDIR)) {
         return -ENOENT;
     }
-
-    if (node->mode & S_IFDIR) {
-        fprintf(stderr, "unlink: cannot unlink directory %s\n", path);
-        return -EISDIR;
-    }
-
-    for (int i = 0; i < node->block_count; i++) {
-        if (node->blocks[i] >= 0) {
-            free_block(node->blocks[i]);
+    // Remove directory entry
+    for (int i = 0; i < inode_count; i++) {
+        if (strcmp(inodes[i].path, path) == 0) {
+            inodes[i].path[0] = '\0'; // Mark as deleted
+            break;
         }
     }
-
-    // Remove inode
-    int index = node - inodes; // Compute the inode index
-    memmove(&inodes[index], &inodes[index + 1], (inode_count - index - 1) * sizeof(inode_t));
-    memset(&inodes[--inode_count], 0, sizeof(inode_t));
-
-    save_inodes();
-    printf("unlink(%s) -> 0\n", path);
     return 0;
 }
+
 
 static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *inode = inode_lookup(path);
@@ -327,11 +315,10 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
             to_read = size;
         }
 
-        if (block_index >= inode->block_count) {
-            fprintf(stderr, "read: block index %d out of range for inode %s\n", block_index, path);
-            break; // No more blocks to read
+        if (block_index >= inode->block_count || inode->blocks[block_index] < 0) {
+            fprintf(stderr, "read: block index %d out of range or uninitialized\n", block_index);
+            return total_read; // Stop reading if invalid block
         }
-
         int block_num = inode->blocks[block_index];
         void *block = blocks_get_block(block_num);
         if (!block) {
@@ -376,12 +363,12 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
 
         // Allocate a block if necessary
         if (block_index >= inode->block_count) {
-            int block_num = inode_add_block(inode);
-            if (block_num < 0) {
-                printf("write: failed to allocate block for inode %s\n", path);
-                return -ENOSPC;
+            if (inode_add_block(inode) < 0) {
+                fprintf(stderr, "write: failed to allocate block\n");
+                return total_written;
             }
         }
+
 
         // Get the block number and ensure it's valid
         int block_num = inode->blocks[block_index];
