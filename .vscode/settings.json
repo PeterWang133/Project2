@@ -2,6 +2,7 @@
     "files.associations": {
         "blocks.h": "c",
         "bitmap.h": "c",
-        "types.h": "c"
+        "types.h": "c",
+        "stat.h": "c"
     }
 }
