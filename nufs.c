@@ -345,7 +345,7 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         return -EISDIR;
     }
 
-    size_t total_written = 0;
+    size_t total_written = 0; 
 
     while (total_written < size) {
         int block_index = (offset + total_written) / BLOCK_SIZE;
