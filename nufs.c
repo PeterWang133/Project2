@@ -138,44 +138,30 @@ int inode_add_block(inode_t *node) {
 }
 
 int nufs_rename(const char *from, const char *to) {
-    // Check if source file exists
     inode_t *inode = inode_lookup(from);
     if (!inode) {
         fprintf(stderr, "rename: source file %s not found\n", from);
-        return -ENOENT; // Source not found
+        return -ENOENT;
     }
 
-    // Check if the destination already exists
     if (inode_lookup(to)) {
         fprintf(stderr, "rename: destination %s already exists\n", to);
-        return -EEXIST; // Destination already exists
+        return -EEXIST;
     }
 
-    // Ensure the destination path length is valid
     if (strlen(to) >= sizeof(inode->path)) {
         fprintf(stderr, "rename: destination path %s is too long\n", to);
-        return -ENAMETOOLONG; // Destination path too long
+        return -ENAMETOOLONG;
     }
 
-    // Ensure renaming within the same directory structure (if required by spec)
-    const char *last_slash_from = strrchr(from, '/');
-    const char *last_slash_to = strrchr(to, '/');
-    if (last_slash_from && last_slash_to &&
-        strncmp(from, to, last_slash_from - from + 1) != 0) {
-        fprintf(stderr, "rename: cannot move files across directories %s -> %s\n", from, to);
-        return -EXDEV; // Cross-directory rename not supported
-    }
-
-    // Update inode path
+    // Update the inode path
     strncpy(inode->path, to, sizeof(inode->path) - 1);
-    inode->path[sizeof(inode->path) - 1] = '\0'; // Ensure null-termination
-    save_inodes();
+    inode->path[sizeof(inode->path) - 1] = '\0';
 
+    save_inodes();
     printf("rename(%s -> %s) successful\n", from, to);
     return 0;
 }
-
-
 
 // Check if the file or directory exists and has the required permissions
 int nufs_access(const char *path, int mask) {
@@ -293,38 +279,31 @@ int nufs_mkdir(const char *path, mode_t mode) {
 
 
 int nufs_unlink(const char *path) {
-    // Lookup the inode for the given path
     inode_t *node = inode_lookup(path);
     if (!node) {
         fprintf(stderr, "unlink: file %s not found\n", path);
-        return -ENOENT; // File not found
+        return -ENOENT;
     }
 
-    // Check if the path represents a directory
+    // Ensure it's not a directory
     if (node->mode & S_IFDIR) {
         fprintf(stderr, "unlink: cannot unlink directory %s\n", path);
-        return -EISDIR; // Cannot unlink directories
+        return -EISDIR;
     }
 
-    // Free all blocks associated with the file
+    // Free associated blocks
     for (int i = 0; i < node->block_count; i++) {
-        if (node->blocks[i] >= 0) { // Ensure valid block numbers
+        if (node->blocks[i] >= 0) {
             free_block(node->blocks[i]);
-            node->blocks[i] = -1; // Mark the block as unused
         }
     }
 
-    // Remove the inode entry by shifting all subsequent inodes
-    int inode_index = node - inodes; // Get the index of the inode
-    for (int i = inode_index; i < inode_count - 1; i++) {
-        inodes[i] = inodes[i + 1];
-    }
-    memset(&inodes[inode_count - 1], 0, sizeof(inode_t)); // Clear the last inode
-    inode_count--;
+    // Remove inode
+    int index = node - inodes; // Compute the index of the inode
+    memmove(&inodes[index], &inodes[index + 1], (inode_count - index - 1) * sizeof(inode_t));
+    memset(&inodes[--inode_count], 0, sizeof(inode_t));
 
-    // Save updated inode data to disk
     save_inodes();
-
     printf("unlink(%s) -> 0\n", path);
     return 0;
 }
@@ -334,15 +313,14 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
     inode_t *inode = inode_lookup(path);
     if (!inode) {
         fprintf(stderr, "read: inode not found for path %s\n", path);
-        return -ENOENT; // File not found
+        return -ENOENT;
     }
 
-    // If the offset is beyond EOF, return 0 (nothing to read)
     if (offset >= inode->size) {
-        return 0;
+        return 0; // Offset beyond EOF
     }
 
-    // Adjust size to not exceed file size
+    // Limit size to the remaining file size
     size_t remaining = inode->size - offset;
     if (size > remaining) {
         size = remaining;
@@ -350,46 +328,37 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
 
     size_t total_read = 0;
 
-    // Read data block by block
     while (size > 0) {
-        int block_index = (offset + total_read) / BLOCK_SIZE;   // Calculate which block to read
-        size_t block_offset = (offset + total_read) % BLOCK_SIZE; // Offset within the block
-        size_t to_read = BLOCK_SIZE - block_offset;             // Maximum readable data in the current block
+        int block_index = (offset + total_read) / BLOCK_SIZE;   // Block index
+        size_t block_offset = (offset + total_read) % BLOCK_SIZE; // Offset within block
+        size_t to_read = BLOCK_SIZE - block_offset;             // Max readable from block
 
         if (to_read > size) {
-            to_read = size; // Limit to the requested size
+            to_read = size;
         }
 
-        // Ensure the block index is within range
         if (block_index >= inode->block_count) {
-            fprintf(stderr, "read: block index %d out of range for inode %s\n", block_index, path);
-            break; // No more blocks to read
+            fprintf(stderr, "read: block index %d out of range\n", block_index);
+            return total_read; // Partial read, if applicable
         }
 
         int block_num = inode->blocks[block_index];
-        if (block_num < 0) {
-            fprintf(stderr, "read: invalid block number %d at block index %d\n", block_num, block_index);
-            return -EIO; // Invalid block mapping
-        }
-
-        // Get the block data
         void *block = blocks_get_block(block_num);
         if (!block) {
-            fprintf(stderr, "read: failed to retrieve block number %d\n", block_num);
-            return -EIO; // Block retrieval failed
+            fprintf(stderr, "read: failed to retrieve block %d\n", block_num);
+            return -EIO;
         }
 
-        // Copy data from the block to the buffer
         memcpy(buf + total_read, (char *)block + block_offset, to_read);
 
-        // Update counters
         total_read += to_read;
         size -= to_read;
     }
 
     printf("read(%s, %zu bytes, offset %ld) -> %zu bytes read\n", path, total_read, offset, total_read);
-    return total_read; // Return the total bytes read
+    return total_read;
 }
+
 
 static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     // Lookup the inode for the given path
