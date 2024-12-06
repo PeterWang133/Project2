@@ -389,7 +389,7 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         int block_num = inode->blocks[block_index];
         void *block = blocks_get_block(block_num);
         if (!block) {
-            fprintf(stderr, "read: failed to retrieve block %d for path '%s'\n", block_num);
+            fprintf(stderr, "read: failed to retrieve block %d for path '%s'\n", block_num, path);
             return -EIO;
         }
 
