@@ -28,14 +28,12 @@ typedef struct {
 static inode_t inodes[MAX_FILES];
 static int inode_count = 0;
 
-// Save inodes to disk
 void save_inodes() {
     void *block = blocks_get_block(1); // Block 1 reserved for metadata
     memcpy(block, inodes, sizeof(inodes));
     printf("Saved inodes to disk.\n");
 }
 
-// Load inodes from disk
 void load_inodes() {
     void *block = blocks_get_block(1); // Block 1 reserved for metadata
     memcpy(inodes, block, sizeof(inodes));
@@ -47,6 +45,7 @@ void load_inodes() {
     }
     printf("Loaded inodes from disk.\n");
 }
+
 
 // Initialize storage
 void storage_init(const char *path) {
@@ -122,16 +121,15 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
             strlen(inodes[i].path) > strlen(path)) {
             const char *name = inodes[i].path + strlen(path);
             if (name[0] == '/') name++; // Skip the '/'
-            filler(buf, name, NULL, 0);
+            if (strlen(name) > 0) {
+                filler(buf, name, NULL, 0);
+            }
         }
     }
 
     printf("readdir(%s)\n", path);
     return 0;
 }
-
-
-
 
 int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
     if (inode_lookup(path)) return -EEXIST;
@@ -171,7 +169,7 @@ int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
     inode_t *node = inode_lookup(path);
     if (!node) return -ENOENT;
 
-    if (offset >= node->size) return 0; // Nothing more to read
+    if (offset >= node->size) return 0; // Nothing to read
 
     size_t bytes_read = 0;
     while (size > 0 && offset < node->size) {
@@ -193,9 +191,6 @@ int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fus
     printf("read(%s, %ld bytes, @+%lld) -> %ld\n", path, size, (long long)offset, bytes_read);
     return bytes_read;
 }
-
-
-
 
 int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *node = inode_lookup(path);
@@ -219,8 +214,7 @@ int nufs_write(const char *path, const char *buf, size_t size, off_t offset, str
         offset += to_write;
     }
 
-    // Ensure file size reflects the maximum offset reached
-    if (offset > node->size) node->size = offset;
+    if (offset > node->size) node->size = offset; // Update file size
     save_inodes();
 
     printf("write(%s, %ld bytes, @+%lld) -> %ld\n", path, size, (long long)offset, bytes_written);
