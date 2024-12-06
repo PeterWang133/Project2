@@ -95,12 +95,13 @@ void storage_init(const char *path) {
 // Find an inode by path
 inode_t *inode_lookup(const char *path) {
     char normalized_path[256];
+    // Normalize path: trim trailing slashes, except for root "/"
     strncpy(normalized_path, path, sizeof(normalized_path) - 1);
     normalized_path[sizeof(normalized_path) - 1] = '\0';
 
     size_t len = strlen(normalized_path);
-    if (len > 1 && normalized_path[len - 1] == '/') {
-        normalized_path[len - 1] = '\0'; // Normalize path by removing trailing slash
+    while (len > 1 && normalized_path[len - 1] == '/') {
+        normalized_path[--len] = '\0'; // Remove trailing slashes
     }
 
     for (int i = 0; i < inode_count; i++) {
@@ -388,7 +389,7 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         int block_num = inode->blocks[block_index];
         void *block = blocks_get_block(block_num);
         if (!block) {
-            fprintf(stderr, "read: failed to retrieve block %d for path '%s'\n", block_num, path);
+            fprintf(stderr, "read: failed to retrieve block %d for path '%s'\n", block_num);
             return -EIO;
         }
 
