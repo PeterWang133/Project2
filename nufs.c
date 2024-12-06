@@ -221,20 +221,19 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
     filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
 
-    for (int i = 0; i < inode_count; i++) {
-        if (strncmp(inodes[i].path, path, strlen(path)) == 0) {
-            const char *name = inodes[i].path + strlen(path);
-            if (name[0] == '/') {
-                name++;
-            }
-            if (strchr(name, '/') == NULL) {
-                filler(buf, name, NULL, 0);
+    if (strcmp(path, "/") == 0) {
+        for (int i = 0; i < inode_count; i++) {
+            if ((inodes[i].mode & S_IFDIR) || (inodes[i].mode & S_IFREG)) {
+                const char *name = inodes[i].path + 1; // Skip leading "/"
+                if (strlen(name) > 0 && strchr(name, '/') == NULL) {
+                    filler(buf, name, NULL, 0);
+                }
             }
         }
     }
+
     return 0;
 }
-
 
 static int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
     printf("mknod(%s, %o)\n", path, mode);
@@ -312,15 +311,15 @@ int nufs_unlink(const char *path) {
     return 0;
 }
 
-
 static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *inode = inode_lookup(path);
     if (!inode) {
-        fprintf(stderr, "write: inode not found for path '%s'\n", path);
+        fprintf(stderr, "write: inode not found for path %s\n", path);
         return -ENOENT;
     }
 
     size_t total_written = 0;
+
     while (size > 0) {
         int block_index = (offset + total_written) / BLOCK_SIZE;
         size_t block_offset = (offset + total_written) % BLOCK_SIZE;
