@@ -17,6 +17,17 @@
 #define MAX_FILES 128
 #define MAX_BLOCKS_PER_FILE 128
 
+typedef struct {
+    char path[256];
+    int size;
+    int blocks[MAX_BLOCKS_PER_FILE];
+    int block_count;
+    mode_t mode;
+} inode_t;
+
+static inode_t inodes[MAX_FILES];
+static int inode_count = 0;
+
 // Function declarations
 void save_inodes();
 void load_inodes();
@@ -33,17 +44,6 @@ int nufs_unlink(const char *path);
 static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
 static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
 void nufs_init_ops(struct fuse_operations *ops);
-
-typedef struct {
-    char path[256];
-    int size;
-    int blocks[MAX_BLOCKS_PER_FILE];
-    int block_count;
-    mode_t mode;
-} inode_t;
-
-static inode_t inodes[MAX_FILES];
-static int inode_count = 0;
 
 void save_inodes() {
     void *block = blocks_get_block(1); // Block 1 reserved for metadata
