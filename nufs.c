@@ -56,7 +56,6 @@ void save_inodes() {
     printf("Saved inodes to disk.\n");
 }
 
-
 void load_inodes() {
     void *block = blocks_get_block(1); // Block 1 reserved for metadata
     if (!block) {
@@ -87,7 +86,6 @@ void storage_init(const char *path) {
         inode_create("/", S_IFDIR | 0755);
     }
 
-
     printf("Storage initialized successfully.\n");
 }
 
@@ -95,7 +93,7 @@ void storage_init(const char *path) {
 // Find an inode by path
 inode_t *inode_lookup(const char *path) {
     for (int i = 0; i < inode_count; i++) {
-        if (strcmp(inodes[i].path, path) == 0 || strcmp(inodes[i].path, path + 1) == 0) {
+        if (strcmp(inodes[i].path, path) == 0) {
             return &inodes[i];
         }
     }
@@ -301,7 +299,7 @@ int nufs_unlink(const char *path) {
 }
 
 
-static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
+int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *inode = inode_lookup(path);
     if (!inode) {
         fprintf(stderr, "read: inode not found for path %s\n", path);
@@ -320,9 +318,9 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
     size_t total_read = 0;
 
     while (size > 0) {
-        int block_index = (offset + total_read) / BLOCK_SIZE; // Calculate block index
-        size_t block_offset = (offset + total_read) % BLOCK_SIZE; // Offset within block
-        size_t to_read = BLOCK_SIZE - block_offset; // Max bytes to read in current block
+        int block_index = (offset + total_read) / BLOCK_SIZE;
+        size_t block_offset = (offset + total_read) % BLOCK_SIZE;
+        size_t to_read = BLOCK_SIZE - block_offset;
         if (to_read > size) {
             to_read = size;
         }
@@ -371,7 +369,8 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         }
 
         if (block_index >= inode->block_count) {
-            if (inode_add_block(inode) < 0) {
+            int new_block = inode_add_block(inode);
+            if (new_block < 0) {
                 fprintf(stderr, "write: failed to allocate block\n");
                 return total_written;
             }
