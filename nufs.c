@@ -17,6 +17,23 @@
 #define MAX_FILES 128
 #define MAX_BLOCKS_PER_FILE 128
 
+// Function declarations
+void save_inodes();
+void load_inodes();
+void storage_init(const char *path);
+inode_t *inode_lookup(const char *path);
+inode_t *inode_create(const char *path, mode_t mode);
+int inode_add_block(inode_t *node);
+int nufs_access(const char *path, int mask);
+int nufs_getattr(const char *path, struct stat *st);
+int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi);
+static int nufs_mknod(const char *path, mode_t mode, dev_t rdev);
+int nufs_mkdir(const char *path, mode_t mode);
+int nufs_unlink(const char *path);
+static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
+static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi);
+void nufs_init_ops(struct fuse_operations *ops);
+
 typedef struct {
     char path[256];
     int size;
