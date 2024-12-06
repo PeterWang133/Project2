@@ -312,7 +312,7 @@ int nufs_unlink(const char *path) {
 static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *inode = inode_lookup(path);
     if (!inode) {
-        printf("read: inode not found for path %s\n", path);
+        fprintf(stderr, "read: inode not found for path %s\n", path);
         return -ENOENT;
     }
 
@@ -320,16 +320,19 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         return 0; // Offset beyond EOF
     }
 
+    // Calculate remaining readable bytes
     size_t remaining = inode->size - offset;
     if (size > remaining) {
         size = remaining;
     }
 
     size_t total_read = 0;
+
     while (size > 0) {
         int block_index = (offset + total_read) / BLOCK_SIZE;
         size_t block_offset = (offset + total_read) % BLOCK_SIZE;
         size_t to_read = BLOCK_SIZE - block_offset;
+
         if (to_read > size) {
             to_read = size;
         }
@@ -339,8 +342,18 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         }
 
         int block_num = inode->blocks[block_index];
+        if (block_num < 0) {
+            fprintf(stderr, "read: invalid block number %d at block index %d\n", block_num, block_index);
+            return -EIO; // Error: invalid block mapping
+        }
+
         void *block = blocks_get_block(block_num);
-        memcpy(buf + total_read, block + block_offset, to_read);
+        if (!block) {
+            fprintf(stderr, "read: failed to retrieve block number %d\n", block_num);
+            return -EIO; // Error: block retrieval failed
+        }
+
+        memcpy(buf + total_read, (char *)block + block_offset, to_read);
 
         total_read += to_read;
         size -= to_read;
@@ -349,8 +362,6 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
     printf("read(%s, %zu bytes, offset %ld) -> %zu bytes read\n", path, total_read, offset, total_read);
     return total_read;
 }
-
-
 
 static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     // Lookup the inode for the given path
