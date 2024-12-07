@@ -80,7 +80,7 @@ void save_inodes() {
         return;
     }
     memcpy(meta_block, &inode_count, sizeof(inode_count));
-
+    // Write inodes to data blocks
     int total = inode_count;
     int written = 0;
     int block_num = FIRST_INODE_BLOCK;
@@ -95,7 +95,7 @@ void save_inodes() {
             fprintf(stderr, "save_inodes: Failed to access inode block %d\n", block_num);
             return;
         }
-
+        // Copy inodes to block
         memcpy(b, &inodes[written], count * sizeof(inode_t));
         written += count;
         block_num++;
@@ -143,7 +143,12 @@ void load_inodes() {
     printf("Loaded %d inodes from disk.\n", inode_count);
 }
 
-
+/**
+ * Initialize filesystem storage with a disk image.
+ * 
+ * @param path Path to the disk image file
+ * @note Creates root directory if it doesn't exist
+ */
 void storage_init(const char *path) {
     printf("Initializing storage with disk image: %s\n", path);
 
@@ -158,6 +163,12 @@ void storage_init(const char *path) {
     printf("Storage initialized successfully.\n");
 }
 
+/**
+ * Look up an inode by its full path.
+ * 
+ * @param path Full path of the file or directory
+ * @return Pointer to the inode, or NULL if not found
+ */
 inode_t *inode_lookup(const char *path) {
     char normalized_path[256];
     strncpy(normalized_path, path, sizeof(normalized_path) - 1);
@@ -176,6 +187,13 @@ inode_t *inode_lookup(const char *path) {
     return NULL;
 }
 
+/**
+ * Create a new inode for a file or directory.
+ * 
+ * @param path Full path for the new inode
+ * @param mode File mode (permissions and type)
+ * @return Pointer to the newly created inode
+ */
 inode_t *inode_create(const char *path, mode_t mode) {
     if (inode_count >= MAX_FILES) {
         return NULL;
@@ -193,6 +211,12 @@ inode_t *inode_create(const char *path, mode_t mode) {
     return node;
 }
 
+/**
+ * Allocate a new block for a file.
+ * 
+ * @param node Pointer to the inode
+ * @return Block number of the newly allocated block, or negative error code
+ */
 int inode_add_block(inode_t *node) {
     if (node->block_count >= MAX_BLOCKS_PER_FILE) {
         fprintf(stderr, "inode_add_block: max blocks reached for inode\n");
@@ -212,6 +236,13 @@ int inode_add_block(inode_t *node) {
     return block_index;
 }
 
+/**
+ * Rename a file or directory.
+ * 
+ * @param from Original path
+ * @param to New path
+ * @return 0 on success, negative error code on failure
+ */
 int nufs_rename(const char *from, const char *to) {
     inode_t *inode = inode_lookup(from);
     if (!inode) {
@@ -241,6 +272,13 @@ int nufs_rename(const char *from, const char *to) {
     return 0;
 }
 
+/**
+ * Check file access permissions.
+ * 
+ * @param path File path
+ * @param mask Access mode
+ * @return 0 on success
+ */
 int nufs_access(const char *path, int mask) {
     inode_t *node = inode_lookup(path);
     if (!node) {
@@ -252,6 +290,13 @@ int nufs_access(const char *path, int mask) {
     return 0;
 }
 
+/**
+ * Get file attributes.
+ * 
+ * @param path File path
+ * @param st Buffer to fill with file attributes
+ * @return 0 on success
+ */
 int nufs_getattr(const char *path, struct stat *st) {
     inode_t *node = inode_lookup(path);
     if (!node) {
@@ -259,6 +304,7 @@ int nufs_getattr(const char *path, struct stat *st) {
         return -ENOENT;
     }
 
+    // Fill stat struct with inode metadata
     memset(st, 0, sizeof(struct stat));
     st->st_mode = node->mode;
     st->st_size = node->size;
@@ -275,18 +321,33 @@ int nufs_getattr(const char *path, struct stat *st) {
     return 0;
 }
 
+
+/**
+ * Read directory contents.
+ * 
+ * @param path Directory path
+ * @param buf Buffer to fill with directory entries
+ * @param filler Function to add entries to the buffer
+ * @param offset Unused
+ * @param fi File information (unused)
+ * @return 0 on success
+ */
 int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {
     printf("readdir(%s)\n", path);
 
     filler(buf, ".", NULL, 0);
     filler(buf, "..", NULL, 0);
 
+    // List files and directories in the given directory
     for (int i = 0; i < inode_count; i++) {
+
+        // Check if the inode path is a direct child of the given directory
         if (strcmp(path, "/") == 0) {
             const char *name = inodes[i].path + 1;
             if (strlen(name) > 0 && strchr(name, '/') == NULL) {
                 filler(buf, name, NULL, 0);
             }
+        // Check if the inode path is a child of the given directory
         } else {
             size_t path_len = strlen(path);
             if (strncmp(inodes[i].path, path, path_len) == 0 && 
@@ -302,20 +363,30 @@ int nufs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offs
 
     return 0;
 }
-
+/**
+ * Create a new file.
+ * 
+ * @param path File path
+ * @param mode File permissions
+ * @param rdev Unused
+ * @return 0 on success, or negative error code
+ */
 static int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
     printf("mknod(%s, %o)\n", path, mode);
 
+    // Check if file already exists
     if (inode_count >= MAX_FILES) {
         fprintf(stderr, "mknod: max file count reached\n");
         return -ENOSPC;
     }
 
+    // Check if path is too long
     if (strlen(path) >= sizeof(inodes[0].path)) {
         fprintf(stderr, "mknod: path too long\n");
         return -ENAMETOOLONG;
     }
 
+    // Check if file already exists
     inode_t *node = inode_create(path, mode ? mode : (S_IFREG | 0644));
     if (!node) {
         fprintf(stderr, "mknod: failed to create inode for %s\n", path);
@@ -327,6 +398,13 @@ static int nufs_mknod(const char *path, mode_t mode, dev_t rdev) {
     return 0;
 }
 
+/**
+ * Create a new directory.
+ * 
+ * @param path Directory path
+ * @param mode Directory permissions
+ * @return 0 on success, or negative error code
+ */
 int nufs_mkdir(const char *path, mode_t mode) {
     printf("mkdir(%s, %o)\n", path, mode);
 
@@ -347,18 +425,26 @@ int nufs_mkdir(const char *path, mode_t mode) {
     return 0;
 }
 
+/**
+ * Remove a file or directory.
+ * 
+ * @param path File or directory path
+ * @return 0 on success, or negative error code
+ */
 int nufs_unlink(const char *path) {
     inode_t *inode = inode_lookup(path);
+    // Check if file exists
     if (!inode) {
         fprintf(stderr, "unlink: file %s not found\n", path);
         return -ENOENT;
     }
-
+    // Check if file is a directory
     if (inode->mode & S_IFDIR) {
         fprintf(stderr, "unlink: cannot unlink directory %s\n", path);
         return -EISDIR;
     }
 
+    // Free data blocks
     for (int i = 0; i < inode->block_count; i++) {
         if (inode->blocks[i] >= 0) {
             free_block(inode->blocks[i]);
@@ -375,18 +461,31 @@ int nufs_unlink(const char *path) {
     return 0;
 }
 
+/**
+ * Write data to a file.
+ * 
+ * @param path File path
+ * @param buf Buffer containing data to write
+ * @param size Number of bytes to write
+ * @param offset Starting byte offset
+ * @param fi File information (unused)
+ * @return Number of bytes written, or negative error code
+ */
 static int nufs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *inode = inode_lookup(path);
+    // Check if file exists
     if (!inode) {
         fprintf(stderr, "write: inode not found for path %s\n", path);
         return -ENOENT;
     }
 
+    // Check if file is a directory
     if (!(inode->mode & S_IFREG)) {
         fprintf(stderr, "write: cannot write to directory %s\n", path);
         return -EISDIR;
     }
 
+    // Write data block by block
     size_t total_written = 0;
     while (total_written < size) {
         int block_index = (offset + total_written) / BLOCK_SIZE;
@@ -405,6 +504,7 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
             }
         }
 
+        // Write data to block
         int block_num = inode->blocks[block_index];
         void *block = blocks_get_block(block_num);
         if (!block) {
@@ -416,6 +516,7 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
         total_written += to_write;
     }
 
+    // Update file size if necessary
     if (offset + total_written > inode->size) {
         inode->size = offset + total_written;
     }
@@ -428,28 +529,41 @@ static int nufs_write(const char *path, const char *buf, size_t size, off_t offs
     return total_written;
 }
 
+/**
+ * Read data from a file.
+ * 
+ * @param path File path
+ * @param buf Buffer to read data into
+ * @param size Number of bytes to read
+ * @param offset Starting byte offset
+ * @param fi File information (unused)
+ * @return Number of bytes read, or negative error code
+ */
 static int nufs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {
     inode_t *inode = inode_lookup(path);
+    // Check if file exists
     if (!inode) {
         fprintf(stderr, "read: inode not found for path '%s'\n", path);
         return -ENOENT;
     }
 
+    // Check if file is a directory
     if (!(inode->mode & S_IFREG)) {
         fprintf(stderr, "read: cannot read directory %s\n", path);
         return -EISDIR;
     }
-
+    // Check if offset is beyond file size
     if (offset >= inode->size) {
         return 0;
     }
-
+    // Check if size exceeds remaining file size
     size_t remaining = inode->size - offset;
     if (size > remaining) {
         size = remaining;
     }
 
     size_t total_read = 0;
+    // Read data block by block
     while (total_read < size) {
         int block_index = (offset + total_read) / BLOCK_SIZE;
         size_t block_offset = (offset + total_read) % BLOCK_SIZE;
@@ -480,6 +594,11 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
     return total_read;
 }
 
+/**
+ * Initialize FUSE operations with custom filesystem functions.
+ * 
+ * @param ops Pointer to the FUSE operations struct
+ */
 void nufs_init_ops(struct fuse_operations *ops) {
     memset(ops, 0, sizeof(struct fuse_operations));
     ops->access = nufs_access;
@@ -493,6 +612,7 @@ void nufs_init_ops(struct fuse_operations *ops) {
     ops->rename = nufs_rename;
 }
 
+// Main function to mount the filesystem with the given disk image.
 int main(int argc, char *argv[]) {
     assert(argc > 2 && argc < 6);
     printf("Mounting filesystem with disk image: %s\n", argv[argc - 1]);
