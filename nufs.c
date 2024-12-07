@@ -451,10 +451,14 @@ int nufs_unlink(const char *path) {
         }
     }
 
+    // Remove this specific inode by shifting the array
     int index = inode - inodes;
     memmove(&inodes[index], &inodes[index + 1], (inode_count - index - 1) * sizeof(inode_t));
-    memset(&inodes[inode_count - 1], 0, sizeof(inode_t));
     inode_count--;
+
+    // Update the inode bitmap to reflect the removal
+    void *ibm = get_inode_bitmap();
+    bitmap_put(ibm, index, 0);
 
     save_inodes();
     printf("unlink(%s) -> 0\n", path);
@@ -552,11 +556,13 @@ static int nufs_read(const char *path, char *buf, size_t size, off_t offset, str
         fprintf(stderr, "read: cannot read directory %s\n", path);
         return -EISDIR;
     }
+    
     // Check if offset is beyond file size
     if (offset >= inode->size) {
         return 0;
     }
-    // Check if size exceeds remaining file size
+    
+    // Limit read size to file size
     size_t remaining = inode->size - offset;
     if (size > remaining) {
         size = remaining;
